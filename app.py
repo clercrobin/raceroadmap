@@ -2476,7 +2476,7 @@ def getSpecificWeeks(
 
 def compute_training_plan(inputs):
     result = []
-    for i in range(3):
+    for i in range(len(inputs["races"])):
         log_info(f"Computing training plan for {i} race")
         log_info(f"Inputs: {inputs}")
         if inputs["races"][i]["distance"] >= 0:
@@ -2645,6 +2645,28 @@ def compute_training_plan_1_race(inputs, i):
     )
     return totalMicrocycles
 
+# Function to add a new race
+def add_race():
+    if len(st.session_state["inputs"]["races"]) >= 3:
+        st.error("Cannot add more than 3 races")
+    else:
+        st.session_state["inputs"]["races"].append({
+            "date": date(2025, 12, 31),
+            "objective": "Finish",
+            "weekly_start_hours": 5,
+            "sport": "Run",
+            "target_hours": 3,
+            "weekly_end_hours": 7,
+            "distance": 42.195,
+            "target_minutes": 15,
+            "other_sports": [],
+            "other_sport_shares": {},
+        })
+    
+# Function to remove a race by index
+def remove_race(index):
+    st.session_state["inputs"]["races"].pop(index)
+    
 
 # Initialize session state for all inputs if not already set
 if "inputs" not in st.session_state:
@@ -3016,261 +3038,98 @@ with st.container():
     # with col10:
     #     intensity = st.selectbox("Intensity", ["Low", "Medium", "High"], ["Low", "Medium", "High"].index(st.session_state["inputs"]["intensity"]), key="input_intensity",on_change=update_training_preferences)
 # Second Row: Three Columns for Races
+
 st.header("Race Planning")
-col1, col2, col3 = st.columns(3)
 
-with col1:
-    st.subheader("Race 1")
-    col_target1_1, col_target1_2, col_target1_3 = st.columns(3)
-    with col_target1_1:
-        race1_date = st.date_input(
-            "Race Date",
-            value=st.session_state["inputs"]["races"][0]["date"],
-            key="race1_date",
-            on_change=update_training_preferences,
-        )
-        race1_objective = st.selectbox(
-            "Objective",
-            ["Perf", "Finish"],
-            ["Perf", "Finish"].index(
-                st.session_state["inputs"]["races"][0]["objective"]
-            ),
-            key="race1_objective",
-            on_change=update_training_preferences,
-        )
-        race1_weekly_start_hours = st.slider(
-            "Weekly Hours (Start of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][0]["weekly_start_hours"],
-            key="race1_weekly_start_hours",
-            on_change=update_training_preferences,
-        )
+st.button("Add Race", on_click=add_race)
+# Create dynamic columns based on the number of races
+columns = st.columns(min(len(st.session_state["inputs"]["races"]), 3))  # Limit to 3 columns at a time
 
-    with col_target1_2:
-        race1_sport = st.selectbox(
-            "Sport",
-            ["Run", "Bike"],
-            ["Run", "Bike"].index(st.session_state["inputs"]["races"][0]["sport"]),
-            key="race1_sport",
-            on_change=update_training_preferences,
-        )
-        race1_target_hours = st.number_input(
-            "Target Time (hours)",
-            value=st.session_state["inputs"]["races"][0]["target_hours"],
-            step=1,
-            key="race1_target_hours",
-            on_change=update_training_preferences,
-        )
-        race1_weekly_end_hours = st.slider(
-            "Weekly Hours (End of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][0]["weekly_end_hours"],
-            key="race1_weekly_end_hours",
-            on_change=update_training_preferences,
-        )
-
-    with col_target1_3:
-        race1_distance = st.number_input(
-            "Distance (km)",
-            value=st.session_state["inputs"]["races"][0]["distance"],
-            step=1.0,
-            key="race1_distance",
-            on_change=update_training_preferences,
-        )
-        race1_target_minutes = st.number_input(
-            "Target Time (minutes)",
-            value=st.session_state["inputs"]["races"][0]["target_minutes"],
-            step=1,
-            key="race1_target_minutes",
-            on_change=update_training_preferences,
-        )
-        other_sports1 = st.multiselect(
-            "Other Sports",
-            ["Bike"] if race1_sport == "Run" else ["Run"],
-            key="other_sports1",
-            on_change=update_training_preferences,
-        )
-        other_sport1_shares = {}
-        for sport in other_sports1:
-            other_sport1_shares[sport] = st.slider(
-                f"{sport} Share (%)",
-                min_value=0,
-                max_value=50,
-                value=0,
-                key=f"other_sport1_{sport}_share",
+for i, race in enumerate(st.session_state["inputs"]["races"]):
+    with columns[i]:
+        st.subheader(f"Race {i + 1}") 
+        st.button(f"Remove Race {i + 1}", on_click=remove_race, args=(i,))
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            race_date = st.date_input(
+                "Race Date",
+                value=st.session_state["inputs"]["races"][i]["date"],
+                key=f"race{i + 1}_date",
                 on_change=update_training_preferences,
             )
-        validate_total_share(other_sport1_shares)
-with col2:
-    st.subheader("Race 2")
-    col_target2_1, col_target2_2, col_target2_3 = st.columns(3)
-    with col_target2_1:
-        race2_date = st.date_input(
-            "Race Date",
-            value=st.session_state["inputs"]["races"][1]["date"],
-            key="race2_date",
-            on_change=update_training_preferences,
-        )
-        race2_objective = st.selectbox(
-            "Objective",
-            ["Perf", "Finish"],
-            ["Perf", "Finish"].index(
-                st.session_state["inputs"]["races"][1]["objective"]
-            ),
-            key="race2_objective",
-            on_change=update_training_preferences,
-        )
-        race2_weekly_start_hours = st.slider(
-            "Weekly Hours (Start of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][1]["weekly_start_hours"],
-            key="race2_weekly_start_hours",
-            on_change=update_training_preferences,
-        )
-
-    with col_target2_2:
-        race2_sport = st.selectbox(
-            "Sport",
-            ["Run", "Bike"],
-            ["Run", "Bike"].index(st.session_state["inputs"]["races"][1]["sport"]),
-            key="race2_sport",
-        )
-        race2_target_hours = st.number_input(
-            "Target Time (hours)",
-            value=st.session_state["inputs"]["races"][1]["target_hours"],
-            step=1,
-            key="race2_target_hours",
-            on_change=update_training_preferences,
-        )
-        race2_weekly_end_hours = st.slider(
-            "Weekly Hours (End of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][1]["weekly_end_hours"],
-            key="race2_weekly_end_hours",
-            on_change=update_training_preferences,
-        )
-
-    with col_target2_3:
-        race2_distance = st.number_input(
-            "Distance (km)",
-            value=st.session_state["inputs"]["races"][1]["distance"],
-            step=1.0,
-            key="race2_distance",
-            on_change=update_training_preferences,
-        )
-        race2_target_minutes = st.number_input(
-            "Target Time (minutes)",
-            value=st.session_state["inputs"]["races"][1]["target_minutes"],
-            step=1,
-            key="race2_target_minutes",
-            on_change=update_training_preferences,
-        )
-        other_sports2 = st.multiselect(
-            "Other Sports",
-            ["Bike"] if race2_sport == "Run" else ["Run"],
-            key="other_sports2",
-            on_change=update_training_preferences,
-        )
-        other_sport2_shares = {}
-        for sport in other_sports2:
-            other_sport2_shares[sport] = st.slider(
-                f"{sport} Share (%)",
-                min_value=0,
-                max_value=50,
-                value=0,
-                key=f"other_sport2_{sport}_share",
+            objective = st.selectbox(
+                "Objective",
+                ["Perf", "Finish"],
+                ["Perf", "Finish"].index(
+                    st.session_state["inputs"]["races"][i]["objective"]
+                ),
+                key=f"race{i + 1}_objective",
                 on_change=update_training_preferences,
             )
-        validate_total_share(other_sport2_shares)
-
-with col3:
-    st.subheader("Race 3")
-    col_target3_1, col_target3_2, col_target3_3 = st.columns(3)
-    with col_target3_1:
-        race3_date = st.date_input(
-            "Race Date",
-            value=st.session_state["inputs"]["races"][2]["date"],
-            key="race3_date",
-            on_change=update_training_preferences,
-        )
-        race3_objective = st.selectbox(
-            "Objective",
-            ["Perf", "Finish"],
-            ["Perf", "Finish"].index(
-                st.session_state["inputs"]["races"][2]["objective"]
-            ),
-            key="race3_objective",
-            on_change=update_training_preferences,
-        )
-        race3_weekly_start_hours = st.slider(
-            "Weekly Hours (Start of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][2]["weekly_start_hours"],
-            key="race3_weekly_start_hours",
-            on_change=update_training_preferences,
-        )
-
-    with col_target3_2:
-        race3_sport = st.selectbox(
-            "Sport",
-            ["Run", "Bike"],
-            ["Run", "Bike"].index(st.session_state["inputs"]["races"][2]["sport"]),
-            key="race3_sport",
-            on_change=update_training_preferences,
-        )
-        race3_target_hours = st.number_input(
-            "Target Time (hours)",
-            value=st.session_state["inputs"]["races"][2]["target_hours"],
-            step=1,
-            key="race3_target_hours",
-            on_change=update_training_preferences,
-        )
-        race3_weekly_end_hours = st.slider(
-            "Weekly Hours (End of Preparation)",
-            1,
-            20,
-            st.session_state["inputs"]["races"][2]["weekly_end_hours"],
-            key="race3_weekly_end_hours",
-            on_change=update_training_preferences,
-        )
-
-    with col_target3_3:
-        race3_distance = st.number_input(
-            "Distance (km)",
-            value=st.session_state["inputs"]["races"][2]["distance"],
-            step=1.0,
-            key="race3_distance",
-            on_change=update_training_preferences,
-        )
-        race3_target_minutes = st.number_input(
-            "Target Time (minutes)",
-            value=st.session_state["inputs"]["races"][2]["target_minutes"],
-            step=1,
-            key="race3_target_minutes",
-            on_change=update_training_preferences,
-        )
-        other_sports3 = st.multiselect(
-            "Other Sports",
-            ["Bike"] if race3_sport == "Run" else ["Run"],
-            key="other_sports3",
-            on_change=update_training_preferences,
-        )
-        other_sport3_shares = {}
-        for sport in other_sports3:
-            other_sport3_shares[sport] = st.slider(
-                f"{sport} Share (%)",
-                min_value=0,
-                max_value=50,
-                value=0,
-                key=f"other_sport3_{sport}_share",
+            weekly_start_hours = st.slider(
+                "Weekly Hours (Start of Preparation)",
+                1,
+                20,
+                st.session_state["inputs"]["races"][i]["weekly_start_hours"],
+                key=f"race{i + 1}_weekly_start_hours",
                 on_change=update_training_preferences,
             )
-        validate_total_share(other_sport3_shares)
+        with col2:
+            sport = st.selectbox(
+                "Sport",
+                ["Run", "Bike"],
+                ["Run", "Bike"].index(st.session_state["inputs"]["races"][i]["sport"]),
+                key=f"race{i + 1}_sport",
+                on_change=update_training_preferences,
+            )
+            target_hours = st.number_input(
+                "Target Time (hours)",
+                value=st.session_state["inputs"]["races"][i]["target_hours"],
+                step=1,
+                key=f"race{i + 1}_target_hours",
+                on_change=update_training_preferences,
+            )
+            weekly_end_hours = st.slider(
+                "Weekly Hours (End of Preparation)",
+                1,
+                20,
+                st.session_state["inputs"]["races"][i]["weekly_end_hours"],
+                key=f"race{i + 1}_weekly_end_hours",
+                on_change=update_training_preferences,
+            )
+        with col3:
+            distance = st.number_input(
+                "Distance (km)",
+                value=st.session_state["inputs"]["races"][i]["distance"],
+                step=1.0,
+                key=f"race{i + 1}_distance",
+                on_change=update_training_preferences,
+            )
+            target_minutes = st.number_input(
+                "Target Time (minutes)",
+                value=st.session_state["inputs"]["races"][i]["target_minutes"],
+                step=1,
+                key=f"race{i + 1}_target_minutes",
+                on_change=update_training_preferences,
+            )
+            other_sports = st.multiselect(
+                "Other Sports",
+                ["Bike"] if sport == "Run" else ["Run"],
+                key=f"other_sports{i + 1}",
+                on_change=update_training_preferences,
+            )
+            other_sport_shares = {}
+            for other_sport in other_sports:
+                other_sport_shares[other_sport] = st.slider(
+                    f"{other_sport} Share (%)",
+                    min_value=0,
+                    max_value=50,
+                    value=0,
+                    key=f"other_sport{i + 1}_{other_sport}_share",
+                    on_change=update_training_preferences,
+                )
+            validate_total_share(other_sport_shares)
 
 # Full Row: Training Load Visualization
 st.header("Training Load and Week Organization")
