@@ -4,30 +4,35 @@ from datetime import datetime, timedelta, date
 import pandas as pd
 import altair as alt
 import logging
-import random
-import json
+import os
+from dotenv import load_dotenv
 from snowflake.snowpark.session import Session
 from snowflake.snowpark.functions import col
 
 # from streamlit_vega_lite import vega_lite_events
 logging.basicConfig(filename="output.log", level=logging.INFO)
 
+# Load local environment variables if running locally
+if not st.secrets:
+    load_dotenv()
+
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Race & Training Planner")
 
 # Use Streamlit secrets management
-client_id = st.secrets["strava"]["client_id"]
-client_secret = st.secrets["strava"]["client_secret"]
-redirect_uri = st.secrets["strava"]["redirect_uri"]
+client_id = st.secrets.get("strava", {}).get("client_id", os.getenv("STRAVA_CLIENT_ID"))
+client_secret = st.secrets.get("strava", {}).get("client_secret", os.getenv("STRAVA_CLIENT_SECRET"))
+redirect_uri = st.secrets.get("strava", {}).get("redirect_uri", os.getenv("STRAVA_REDIRECT_URI"))
 scopes = "read,activity:read_all"
+
 connection_parameters = {
-    "account": st.secrets["snowflake"]["account"],
-    "user": st.secrets["snowflake"]["user"],
-    "password": st.secrets["snowflake"]["password"],
-    "role": st.secrets["snowflake"]["role"],
-    "warehouse": st.secrets["snowflake"]["warehouse"],
-    "database": st.secrets["snowflake"]["database"],
-    "schema": st.secrets["snowflake"]["schema"],
+    "account": st.secrets.get("snowflake", {}).get("account", os.getenv("SNOWFLAKE_ACCOUNT")),
+    "user": st.secrets.get("snowflake", {}).get("user", os.getenv("SNOWFLAKE_USER")),
+    "password": st.secrets.get("snowflake", {}).get("password", os.getenv("SNOWFLAKE_PASSWORD")),
+    "role": st.secrets.get("snowflake", {}).get("role", os.getenv("SNOWFLAKE_ROLE")),
+    "warehouse": st.secrets.get("snowflake", {}).get("warehouse", os.getenv("SNOWFLAKE_WAREHOUSE")),
+    "database": st.secrets.get("snowflake", {}).get("database", os.getenv("SNOWFLAKE_DATABASE")),
+    "schema": st.secrets.get("snowflake", {}).get("schema", os.getenv("SNOWFLAKE_SCHEMA")),
 }
 
 
