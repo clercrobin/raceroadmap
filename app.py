@@ -3364,6 +3364,7 @@ log_info(f"Final activity_df: {activity_df.to_string()}")
 
 if "athlete_id" in st.session_state:
     start_dates = [cycle["startDate"] for cycle in data_cycles]
+    athlete_id = st.session_state["athlete_id"]
 
     if start_dates:
         # Bulk delete existing microcycle_days and microcycles
