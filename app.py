@@ -8,6 +8,10 @@ import os
 from dotenv import load_dotenv
 from snowflake.snowpark.session import Session
 from snowflake.snowpark.functions import col
+from streamlit_cookies_manager import EncryptedCookieManager
+import uuid
+
+
 
 # from streamlit_vega_lite import vega_lite_events
 logging.basicConfig(filename="output.log", level=logging.INFO)
@@ -18,6 +22,23 @@ if not st.secrets:
 
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Race & Training Planner")
+
+cookies = EncryptedCookieManager(
+    prefix="my_app",  # Replace with your app's name or namespace
+    password="supersecret",  # Ensure this is secure
+)
+
+if cookies.ready():
+    # Get or set the session ID in the cookie
+    if "session_id" not in cookies:
+        cookies["session_id"] = str(uuid.uuid4())
+        cookies.save()
+
+    # Retrieve the session ID from the cookie
+    session_id = cookies["session_id"]
+    st.write(f"Your session ID: {session_id}")
+else:
+    st.warning("Cookies are not ready or supported!")
 
 # Use Streamlit secrets management
 client_id = st.secrets.get("strava", {}).get("client_id", os.getenv("STRAVA_CLIENT_ID"))
@@ -446,7 +467,7 @@ ZONE_REPARTITION_BY_TIME_BY_WEEK_BY_CYCLE = {
 }
 
 KEY_WORKOUTS_BY_CYCLE = {
-    "Fondamental": ["ShortIntensity", "LongIntensity"],
+    "Fondamental": ["LongIntensity"],
     "Specific": ["Long", "RaceIntensity"],
     "Pre-Compet": ["ShortIntensity", "RaceIntensity"],
     "Compet": [],
@@ -916,7 +937,7 @@ def planWeekLoads(
         )
         - timedelta(days=7)
     ).days // 7 # begins after the current week
-    if currentMicrocycle == {} and race_number == 0:
+    if currentMicrocycle == {} and race_number == 0 and dateOfStartPreComp.weekday() != 0:
         numberOfWeeksAvailableFondSpe += 1
     log_info(
         f"Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}"
@@ -2593,12 +2614,18 @@ def compute_training_plan_1_race(inputs, i):
     }
 
     raceDate = inputs["races"][i]["date"]
-    startDate = (
-        inputs["races"][i - 1]["date"] + timedelta(days=1) if i > 0 else datetime.now()
-    )
-    currentDate = (
-        inputs["races"][i - 1]["date"] + timedelta(days=1) if i > 0 else datetime.now()
-    )
+    
+    if i > 0:
+        # startDate is the next monday after the previous race, between 4 and 11 days after
+        lastRaceDate = inputs["races"][i - 1]["date"]
+
+        startDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        currentDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+    else:
+        startDate = datetime.now()
+        currentDate = datetime.now()
+    
+    
     currentDate = datetime(currentDate.year, currentDate.month, currentDate.day)
     datesInfo = {
         "startDate": startDate,
@@ -2662,10 +2689,12 @@ def add_race():
             "other_sports": [],
             "other_sport_shares": {},
         })
+        update_training_preferences()
     
 # Function to remove a race by index
 def remove_race(index):
     st.session_state["inputs"]["races"].pop(index)
+    update_training_preferences()
     
 
 # Initialize session state for all inputs if not already set
@@ -2765,7 +2794,7 @@ def update_training_preferences():
 def update_race_data():
     # Dynamically collect all race data
     races = []
-    for i in range(1, 4):  # Assuming 3 races
+    for i, _ in enumerate(st.session_state["inputs"]["races"]):
         race_data = {
             "date": st.session_state[f"race{i}_date"],
             "objective": st.session_state[f"race{i}_objective"],
@@ -2831,6 +2860,45 @@ if "access_token" not in st.session_state:
 # Parse query parameters
 params = st.query_params
 
+session = Session.builder.configs(connection_parameters).create()
+
+session.sql("""
+CREATE TABLE IF NOT EXISTS activities (
+    id INTEGER,
+    name VARCHAR,
+    start_date VARCHAR,
+    distance FLOAT,
+    moving_time INTEGER,
+    elapsed_time INTEGER,
+    total_elevation_gain FLOAT,
+    type VARCHAR,
+    PRIMARY KEY (id)
+)
+""").collect()
+
+session.sql("""
+CREATE TABLE IF NOT EXISTS microcycles (
+    strava_id INTEGER,
+    start_date VARCHAR,
+    end_date VARCHAR,
+    cycle_type VARCHAR,
+    theoretical_weekly_tss FLOAT,
+    PRIMARY KEY (strava_id, start_date)
+)
+""").collect()
+
+session.sql("""
+CREATE TABLE IF NOT EXISTS microcycle_days (
+    strava_id INTEGER,
+    start_date VARCHAR,
+    day VARCHAR,
+    workout_idx INTEGER,
+    zone VARCHAR,
+    seconds INTEGER,
+    PRIMARY KEY (strava_id, start_date, day, workout_idx, zone)
+)
+""").collect()
+
 # If we have a code from Strava, attempt to exchange it for a token
 if "code" in params and st.session_state["access_token"] is None:
     code = params["code"]  # Direct access to the correct key-value pair
@@ -2871,45 +2939,6 @@ if st.session_state["access_token"] is None:
 else:
     # We have a token. We can call Strava's API.
     st.write("You are logged in! Your access token is stored in session_state.")
-
-    session = Session.builder.configs(connection_parameters).create()
-
-    session.sql("""
-    CREATE TABLE IF NOT EXISTS activities (
-        id INTEGER,
-        name VARCHAR,
-        start_date VARCHAR,
-        distance FLOAT,
-        moving_time INTEGER,
-        elapsed_time INTEGER,
-        total_elevation_gain FLOAT,
-        type VARCHAR,
-        PRIMARY KEY (id)
-    )
-    """).collect()
-
-    session.sql("""
-    CREATE TABLE IF NOT EXISTS microcycles (
-        strava_id INTEGER,
-        start_date VARCHAR,
-        end_date VARCHAR,
-        cycle_type VARCHAR,
-        theoretical_weekly_tss FLOAT,
-        PRIMARY KEY (strava_id, start_date)
-    )
-    """).collect()
-
-    session.sql("""
-    CREATE TABLE IF NOT EXISTS microcycle_days (
-        strava_id INTEGER,
-        start_date VARCHAR,
-        day VARCHAR,
-        workout_idx INTEGER,
-        zone VARCHAR,
-        seconds INTEGER,
-        PRIMARY KEY (strava_id, start_date, day, workout_idx, zone)
-    )
-    """).collect()
 
     # Fetch activities from Strava
     access_token = st.session_state["access_token"]
@@ -3055,7 +3084,7 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
             race_date = st.date_input(
                 "Race Date",
                 value=st.session_state["inputs"]["races"][i]["date"],
-                key=f"race{i + 1}_date",
+                key=f"race{i}_date",
                 on_change=update_training_preferences,
             )
             objective = st.selectbox(
@@ -3064,7 +3093,7 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 ["Perf", "Finish"].index(
                     st.session_state["inputs"]["races"][i]["objective"]
                 ),
-                key=f"race{i + 1}_objective",
+                key=f"race{i}_objective",
                 on_change=update_training_preferences,
             )
             weekly_start_hours = st.slider(
@@ -3072,7 +3101,7 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 1,
                 20,
                 st.session_state["inputs"]["races"][i]["weekly_start_hours"],
-                key=f"race{i + 1}_weekly_start_hours",
+                key=f"race{i}_weekly_start_hours",
                 on_change=update_training_preferences,
             )
         with col2:
@@ -3080,14 +3109,14 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 "Sport",
                 ["Run", "Bike"],
                 ["Run", "Bike"].index(st.session_state["inputs"]["races"][i]["sport"]),
-                key=f"race{i + 1}_sport",
+                key=f"race{i}_sport",
                 on_change=update_training_preferences,
             )
             target_hours = st.number_input(
                 "Target Time (hours)",
                 value=st.session_state["inputs"]["races"][i]["target_hours"],
                 step=1,
-                key=f"race{i + 1}_target_hours",
+                key=f"race{i}_target_hours",
                 on_change=update_training_preferences,
             )
             weekly_end_hours = st.slider(
@@ -3095,7 +3124,7 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 1,
                 20,
                 st.session_state["inputs"]["races"][i]["weekly_end_hours"],
-                key=f"race{i + 1}_weekly_end_hours",
+                key=f"race{i}_weekly_end_hours",
                 on_change=update_training_preferences,
             )
         with col3:
@@ -3103,20 +3132,20 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 "Distance (km)",
                 value=st.session_state["inputs"]["races"][i]["distance"],
                 step=1.0,
-                key=f"race{i + 1}_distance",
+                key=f"race{i}_distance",
                 on_change=update_training_preferences,
             )
             target_minutes = st.number_input(
                 "Target Time (minutes)",
                 value=st.session_state["inputs"]["races"][i]["target_minutes"],
                 step=1,
-                key=f"race{i + 1}_target_minutes",
+                key=f"race{i}_target_minutes",
                 on_change=update_training_preferences,
             )
             other_sports = st.multiselect(
                 "Other Sports",
                 ["Bike"] if sport == "Run" else ["Run"],
-                key=f"other_sports{i + 1}",
+                key=f"other_sports{i}",
                 on_change=update_training_preferences,
             )
             other_sport_shares = {}
@@ -3126,7 +3155,7 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                     min_value=0,
                     max_value=50,
                     value=0,
-                    key=f"other_sport{i + 1}_{other_sport}_share",
+                    key=f"other_sport{i}_{other_sport}_share",
                     on_change=update_training_preferences,
                 )
             validate_total_share(other_sport_shares)
