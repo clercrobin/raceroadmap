@@ -1,4 +1,9 @@
 import streamlit as st
+
+
+# Set page configuration
+st.set_page_config(layout="wide", page_title="Race & Training Planner")
+
 import requests
 from datetime import datetime, timedelta, date
 import pandas as pd
@@ -11,8 +16,6 @@ from snowflake.snowpark.functions import col
 from streamlit_cookies_manager import EncryptedCookieManager
 import uuid
 
-
-
 # from streamlit_vega_lite import vega_lite_events
 logging.basicConfig(filename="output.log", level=logging.INFO)
 
@@ -20,8 +23,7 @@ logging.basicConfig(filename="output.log", level=logging.INFO)
 if not st.secrets:
     load_dotenv()
 
-# Set page configuration
-st.set_page_config(layout="wide", page_title="Race & Training Planner")
+
 
 cookies = EncryptedCookieManager(
     prefix="my_app",  # Replace with your app's name or namespace
