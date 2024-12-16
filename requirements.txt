@@ -4,3 +4,4 @@ pandas
 altair
 python-dotenv
 snowflake-snowpark-python
+streamlit-cookies-manager
