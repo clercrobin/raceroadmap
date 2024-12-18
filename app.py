@@ -981,10 +981,14 @@ def planWeekLoads(
         )
         - timedelta(days=7)
     ).days // 7 # begins after the current week
-    if currentMicrocycle == {} and race_number == 0 and dateOfStartPreComp.weekday() != 0:
+    if currentMicrocycle == {} and race_number == 0:
         numberOfWeeksAvailableFondSpe += 1
-    log_debug(
-        f"Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}"
+    if dateOfStartPreComp.weekday() != 0:
+        numberOfWeeksAvailableFondSpe += 1
+    if datesInfo["currentDate"].weekday() ==0 and race_number == 0:
+        numberOfWeeksAvailableFondSpe -= 1
+    log_info(
+        f"Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}, current microcycle: {currentMicrocycle}, race number: {race_number}, date of start precomp weekday: {dateOfStartPreComp.weekday()}, current date {datesInfo['currentDate']}, number of days: {(dateOfStartPreComp - date(datesInfo['currentDate'].year, datesInfo['currentDate'].month, datesInfo['currentDate'].day)).days}"
     )
 
     specificWeeks = []
@@ -1404,16 +1408,16 @@ def planWeekLoads(
         + [precompetMacrocycle]
         + [competitionMacrocycle]
     )
-    log_debug("Past microcycles")
-    log_debug(pastMicrocycles)
-    log_debug("Current microcycle")
-    log_debug(currentMicrocycle)
-    log_debug("New Plan Before Pre Comp")
-    log_debug(newPlanBeforePreComp)
-    log_debug("Precompet microcycle")
-    log_debug(precompetMicrocycle)
-    log_debug("Competition microcycle")
-    log_debug(competitionMicrocycle)
+    log_info("Past microcycles")
+    log_info(pastMicrocycles)
+    log_info("Current microcycle")
+    log_info(currentMicrocycle)
+    log_info("New Plan Before Pre Comp")
+    log_info(newPlanBeforePreComp)
+    log_info("Precompet microcycle")
+    log_info(precompetMicrocycle)
+    log_info("Competition microcycle")
+    log_info(competitionMicrocycle)
     for microcycle in newPlanBeforePreComp:
         microcycle = planFutureWeekDayByDay(microcycle, weekInfo, raceInfo, loadsInfo, datesInfo)
     precompetMicrocycle = planFutureWeekDayByDay(precompetMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
@@ -1943,8 +1947,8 @@ def createWorkout(
     cooldown_duration=600,
     activity="Run",
 ):
-    log_info("Creating workout with params: ")
-    log_info(
+    log_debug("Creating workout with params: ")
+    log_debug(
         f"min_tss: {min_tss}, max_tss: {max_tss}, target_tss: {target_tss}, remaining_time_in_zone: {remaining_time_in_zone}, min_time_in_zones: {min_time_in_zones}, max_time_in_zones: {max_time_in_zones}, cumulative_max_tss_in_zones: {cumulative_max_tss_in_zones}, zones: {zones}, warmup_duration: {warmup_duration}, cooldown_duration: {cooldown_duration}, activity: {activity}"
     )
     total_tss = 0
@@ -2060,7 +2064,7 @@ def createWorkout(
                 secondsInIntervals = round(seconds_in_zone / numberOfIntervals)
             else:
                 secondsInIntervals = 0
-            log_info(f"Zone: {zone}, Number of intervals: {numberOfIntervals}, seconds in intervals: {secondsInIntervals}")
+            log_debug(f"Zone: {zone}, Number of intervals: {numberOfIntervals}, seconds in intervals: {secondsInIntervals}")
             for i in range(numberOfIntervals):
                 intervalsSuggestions.append(
                     {
@@ -2805,13 +2809,17 @@ def compute_training_plan_1_race(inputs, i):
         lastRaceDate = inputs["races"][i - 1]["date"]
 
         startDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        startDate = datetime(startDate.year, startDate.month, startDate.day)
         currentDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        # convert currentDate to datetime
+        currentDate = datetime(currentDate.year, currentDate.month, currentDate.day)
     else:
         startDate = datetime.now()
         currentDate = datetime.now()
+        # currentDate = datetime(year=2024, month=12, day=19)
     
     
-    currentDate = datetime(currentDate.year, currentDate.month, currentDate.day)
+    # currentDate = datetime(currentDate.year, currentDate.month, currentDate.day)
     datesInfo = {
         "startDate": startDate,
         "endDate": raceDate,
@@ -3866,7 +3874,7 @@ with row_organization[1]:
 
             # Fetch the activity details
             activity = week["dayByDay"][selected_day][selected_workout - 1]
-            log_info(f"Activity: {activity}")
+            log_debug(f"Activity: {activity}")
             # Extract and build timeline data
             if "intervalSuggestions" in activity:
                 # Extract and build timeline data
@@ -3891,7 +3899,7 @@ with row_organization[1]:
                 
                 x_ticks = format_x_ticks(current_time)
                 label_expr = "{ " + ", ".join([f"{k}: '{v}'" for k, v in x_ticks.items()]) + " }[datum.value] || ''"
-                log_info(f"label_expr: {label_expr}")
+                log_debug(f"label_expr: {label_expr}")
                 # Convert to DataFrame
                 timeline_df = pd.DataFrame(timeline_data)
                 log_debug(f"Timeline DataFrame:\n{timeline_df}")
