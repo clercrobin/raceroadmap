@@ -23,7 +23,29 @@ logging.basicConfig(filename="output.log", level=logging.INFO)
 if not st.secrets:
     load_dotenv()
 
+custom_css = """
+<style>
+/* Remove margin on the main container */
+section.main > div.stMainBlockContainer {
+    margin-top: 0px !important;
+    padding-top: 0px !important;
+}
 
+/* Remove padding above all Streamlit containers */
+div.withScreencast > div > div > section > div.stMainBlockContainer {
+    margin-top: 20px !important;
+    padding-top: 0px !important;
+}
+
+/* Completely hide iframe for cookies */
+iframe[title="streamlit_cookies_manager.cookie_manager.CookieManager.sync_cookies"] {
+    display: none !important;
+}
+</style>
+"""
+
+# Inject the custom CSS
+st.markdown(custom_css, unsafe_allow_html=True)
 
 cookies = EncryptedCookieManager(
     prefix="my_app",  # Replace with your app's name or namespace
@@ -38,9 +60,9 @@ if cookies.ready():
 
     # Retrieve the session ID from the cookie
     session_id = cookies["session_id"]
-    st.write(f"Your session ID: {session_id}")
-else:
-    st.warning("Cookies are not ready or supported!")
+# else:
+#     # st.warning("Cookies are not ready or supported!")
+#     pass
 
 # Use Streamlit secrets management
 client_id = st.secrets.get("strava", {}).get("client_id", os.getenv("STRAVA_CLIENT_ID"))
@@ -72,6 +94,21 @@ def log_info(message):
 def log_error(message):
     logging.error(message)
 
+# Function to convert seconds to HH:MM:SS format
+def seconds_to_hhmmss(seconds):
+    return str(timedelta(seconds=int(seconds)))
+
+# Update the Y-axis ticks dynamically
+def format_y_ticks(max_seconds):
+    max_seconds = int(max_seconds)
+    ticks = [i for i in range(0, max_seconds + 1, max_seconds // 5)]  # 5 ticks
+    return {tick: seconds_to_hhmmss(tick) for tick in ticks}
+
+# Update the X-axis ticks dynamically
+def format_x_ticks(max_seconds):
+    max_seconds = int(max_seconds)
+    ticks = [i for i in range(0, max_seconds + 1, max_seconds // 5)]  # 5 ticks
+    return {tick: seconds_to_hhmmss(tick) for tick in ticks}
 
 ATHLETE_LEVELS = ["Beginner", "Intermediate", "Confirmed"]
 
@@ -122,6 +159,11 @@ TSS_BY_ZONE_BY_SPORT = {
 ZONE_RECOVERY_FACTOR_BY_SPORT = {
     "Run": {1: 0, 2: 0.2, 3: 0.5, 4: 0.75, 5: 1, 6: 2, 7: 20},
     "Bike": {1: 0, 2: 0.2, 3: 0.5, 4: 0.75, 5: 1, 6: 2, 7: 20},
+}
+
+TYPICAL_DURATION_FOR_INTERVALS_BY_ZONE_BY_SPORT = {
+    "Run": {1: 3600, 2: 3600, 3: 1200, 4: 600, 5: 180, 6: 60, 7: 12},
+    "Bike": {1: 3600, 2: 3600, 3: 1200, 4: 600, 5: 180, 6: 60, 7: 12},
 }
 
 SPEED_BY_ZONE_BY_SPORT_BY_ATHLETE_LEVEL_KMH = {
@@ -783,14 +825,14 @@ def planWeekLoads(
     completedWorkouts,
     race_number
 ):
-    log_info("Planning week loads")
-    log_info(loadsInfo)
-    log_info(datesInfo)
-    log_info(raceInfo)
-    log_info(weekInfo)
-    log_info(currentPlannedMacrocycles)
-    log_info(currentPlannedMicrocycles)
-    log_info(completedWorkouts)
+    log_debug("Planning week loads")
+    log_debug(loadsInfo)
+    log_debug(datesInfo)
+    log_debug(raceInfo)
+    log_debug(weekInfo)
+    log_debug(currentPlannedMacrocycles)
+    log_debug(currentPlannedMicrocycles)
+    log_debug(completedWorkouts)
 
     totalMacrocycles = currentPlannedMacrocycles.copy()
     totalMicrocycles = currentPlannedMicrocycles.copy()
@@ -941,7 +983,7 @@ def planWeekLoads(
     ).days // 7 # begins after the current week
     if currentMicrocycle == {} and race_number == 0 and dateOfStartPreComp.weekday() != 0:
         numberOfWeeksAvailableFondSpe += 1
-    log_info(
+    log_debug(
         f"Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}"
     )
 
@@ -1257,7 +1299,7 @@ def planWeekLoads(
                 "theoreticalResting": True,
             }
             currentPlanningDate = precompetMicrocycle["startDate"]
-        log_info(f"Current planning date {currentPlanningDate}. Current date {datesInfo['currentDate']}")
+        log_debug(f"Current planning date {currentPlanningDate}. Current date {datesInfo['currentDate']}")
 
         if datesInfo["currentDate"] >= datetime(
             currentPlanningDate.year, currentPlanningDate.month, currentPlanningDate.day
@@ -1284,7 +1326,7 @@ def planWeekLoads(
                 "keyWorkouts": [],
                 "dayByDay": {},
             }
-            log_info(f"Creating current microcycle {currentMicrocycleBeforePreComp}")
+            log_debug(f"Creating current microcycle {currentMicrocycleBeforePreComp}")
             newPlanBeforePreComp.append(currentMicrocycleBeforePreComp)
         
         
@@ -1332,13 +1374,13 @@ def planWeekLoads(
                         ),
                     },
                 )
-                log_info(
+                log_debug(
                     f"Updating microcycle {newMicrocycle}, currentPlanningDate: {currentPlanningDate}"
                 )
             else:
                 newMicrocycle["startDate"] = currentPlanningDate
                 newMicrocycle["endDate"] = currentPlanningDate + timedelta(days=6)
-                log_info(
+                log_debug(
                     f"Creating microcycle {newMicrocycle}, currentPlanningDate: {currentPlanningDate}"
                 )
                 if i == len(planBeforePreComp) - 1:
@@ -1362,16 +1404,16 @@ def planWeekLoads(
         + [precompetMacrocycle]
         + [competitionMacrocycle]
     )
-    log_info("Past microcycles")
-    log_info(pastMicrocycles)
-    log_info("Current microcycle")
-    log_info(currentMicrocycle)
-    log_info("New Plan Before Pre Comp")
-    log_info(newPlanBeforePreComp)
-    log_info("Precompet microcycle")
-    log_info(precompetMicrocycle)
-    log_info("Competition microcycle")
-    log_info(competitionMicrocycle)
+    log_debug("Past microcycles")
+    log_debug(pastMicrocycles)
+    log_debug("Current microcycle")
+    log_debug(currentMicrocycle)
+    log_debug("New Plan Before Pre Comp")
+    log_debug(newPlanBeforePreComp)
+    log_debug("Precompet microcycle")
+    log_debug(precompetMicrocycle)
+    log_debug("Competition microcycle")
+    log_debug(competitionMicrocycle)
     for microcycle in newPlanBeforePreComp:
         microcycle = planFutureWeekDayByDay(microcycle, weekInfo, raceInfo, loadsInfo, datesInfo)
     precompetMicrocycle = planFutureWeekDayByDay(precompetMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
@@ -1386,7 +1428,7 @@ def planWeekLoads(
 
 
 def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo):
-    log_info(f"Planning future week day by day for {futureMicrocycle}")
+    log_debug(f"Planning future week day by day for {futureMicrocycle}")
 
     remaining_tss = futureMicrocycle["theoreticalWeeklyTSS"]
     availableDays = weekInfo["availableDays"].copy()
@@ -1413,12 +1455,12 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
         * theroeticalTimeSpentWeekInSeconds
         for zone in ZONES[raceInfo["mainSport"]].keys()
     }
-    log_info(f"Theoretical time in zone {theoreticalTimeInZone}")
+    log_debug(f"Theoretical time in zone {theoreticalTimeInZone}")
 
     dayByDay = {}
     if "compet" == futureMicrocycle["cycleType"].lower():
         # Let's plan the competition
-        log_info("Planning competition")
+        log_debug("Planning competition")
         # Let's plan the competition
         competitionTSS = raceInfo["eventTSS"]
         targetTimeInSeconds = raceInfo["targetTimeInMinutes"] * 60
@@ -1466,12 +1508,14 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
         return futureMicrocycle
     
     if "Long" in futureMicrocycle.get("keyWorkouts", []):
-        log_info("Planning long workout")
+        log_debug("Planning long workout")
         # let's split futureMicrocycle["theoreticalLongWorkoutTSS"] TSS in zones 1 2 and 3 with 30% 50% and 20% of the time respectively
 
         z1Percentage = 0.3
         z2Percentage = 0.5
         z3Percentage = 0.2
+        
+        intervalsSuggestions = []
 
         tz1 = (
             futureMicrocycle["theoreticalLongWorkoutTSS"]
@@ -1519,6 +1563,70 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             + tz2 / 3600 * TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][2]
             + tz3 / 3600 * TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][3]
         )
+        
+        # take half of the tz1 as a warmup in intervals suggestions
+        intervalsSuggestions.append({
+            "intervalType": "Warmup",
+            "description": "Warmup",
+            "duration": tz1/2,
+            "zone": 1,
+            "tss": tz1/2/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][1],
+            "secondsInZone": {1: tz1/2}
+        })
+        # take a third of tz2 next
+        intervalsSuggestions.append({
+            "intervalType": "Main",
+            "description": "Main",
+            "duration": tz2/3,
+            "zone": 2,
+            "tss": tz2/3/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][2],
+            "secondsInZone": {2: tz2/3}
+        })
+        #then half of tz3
+        intervalsSuggestions.append({
+            "intervalType": "Main",
+            "description": "Main",
+            "duration": tz3/2,
+            "zone": 3,
+            "tss": tz3/2/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][3],
+            "secondsInZone": {3: tz3/2}
+        })
+        #then another third of tz2
+        intervalsSuggestions.append({
+            "intervalType": "Main",
+            "description": "Main",
+            "duration": tz2/3,
+            "zone": 2,
+            "tss": tz2/3/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][2],
+            "secondsInZone": {2: tz2/3}
+        })
+        # then rest of tz3
+        intervalsSuggestions.append({
+            "intervalType": "Main",
+            "description": "Main",
+            "duration": tz3/2,
+            "zone": 3,
+            "tss": tz3/2/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][3],
+            "secondsInZone": {3: tz3/2}
+        })
+        # rest of tz2
+        intervalsSuggestions.append({
+            "intervalType": "Main",
+            "description": "Main",
+            "duration": tz2/3,
+            "zone": 2,
+            "tss": tz2/3/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][2],
+            "secondsInZone": {2: tz2/3}
+        })
+        # rest of tz1
+        intervalsSuggestions.append({
+            "intervalType": "Cooldown",
+            "description": "Cooldown",
+            "duration": tz1/2,
+            "zone": 1,
+            "tss": tz1/2/3600*TSS_BY_ZONE_BY_SPORT[raceInfo["mainSport"]][1],
+            "secondsInZone": {1: tz1/2}
+        })
 
         dayByDay[weekInfo["longWorkoutDay"]] = [
             {
@@ -1528,6 +1636,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                 "secondsInZone": {1: tz1, 2: tz2, 3: tz3},
                 "theoreticalDistance": theoreticalDistance,
                 "theoreticalTime": timedelta(seconds=tz1 + tz2 + tz3),
+                "intervalSuggestions": intervalsSuggestions
             }
         ]
 
@@ -1539,7 +1648,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
         if weekInfo["longWorkoutDay"] in availableDays:
             availableDays.remove(weekInfo["longWorkoutDay"])
             dayAvailableDurations[weekInfo["longWorkoutDay"]] -= tz1 + tz2 + tz3
-        log_info(dayByDay)
+        log_debug(dayByDay)
 
     remaining_number_of_workouts = round(
         remaining_tss
@@ -1554,10 +1663,10 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
         tss_per_activity = round(remaining_tss / remaining_number_of_workouts)
 
     if "ShortIntensity" in futureMicrocycle.get("keyWorkouts", []):
-        log_info("Planning short intensity workout")
+        log_debug("Planning short intensity workout")
         # let's split futureMicrocycle["theoreticalShortIntensityTSS"] TSS in zones 5 6 and 7 with 50% 30% and 20% of the time respectively
 
-        total_tss, secondsInZone = createWorkout(
+        total_tss, secondsInZone, intervalsSuggestions = createWorkout(
             loadsInfo["minTssPerWorkout"],
             loadsInfo["maxTssPerWorkout"],
             tss_per_activity,
@@ -1575,7 +1684,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             cooldown_duration=600,
             activity=raceInfo["mainSport"],
         )
-        log_info(
+        log_debug(
             f"Short intensity workout, seconds in zone {secondsInZone}, total tss {total_tss}"
         )
         theoreticalDistance = sum(
@@ -1605,6 +1714,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                     "secondsInZone": secondsInZone,
                     "theoreticalDistance": theoreticalDistance,
                     "theoreticalTime": timedelta(seconds=total_seconds),
+                    "intervalSuggestions": intervalsSuggestions,
                 }
             )
             for zone in ZONES[raceInfo["mainSport"]].keys():
@@ -1614,10 +1724,10 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             # if dayAvailableDurations[best_fit[0]] <= 0:
             availableDays.remove(best_fit[0])
 
-        log_info(dayByDay)
+        log_debug(dayByDay)
     if "LongIntensity" in futureMicrocycle.get("keyWorkouts", []):
-        log_info("Planning long intensity workout")
-        total_tss, secondsInZone = createWorkout(
+        log_debug("Planning long intensity workout")
+        total_tss, secondsInZone, intervalsSuggestions = createWorkout(
             loadsInfo["minTssPerWorkout"],
             loadsInfo["maxTssPerWorkout"],
             tss_per_activity,
@@ -1635,7 +1745,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             cooldown_duration=600,
             activity=raceInfo["mainSport"],
         )
-        log_info(
+        log_debug(
             f"Long intensity workout, seconds in zone {secondsInZone}, total tss {total_tss}"
         )
         theoreticalDistance = sum(
@@ -1664,6 +1774,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                     "secondsInZone": secondsInZone,
                     "theoreticalDistance": theoreticalDistance,
                     "theoreticalTime": timedelta(seconds=total_seconds),
+                    "intervalSuggestions": intervalsSuggestions,
                 }
             )
             for zone in ZONES[raceInfo["mainSport"]].keys():
@@ -1672,11 +1783,11 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             dayAvailableDurations[best_fit[0]] -= total_seconds
             # if dayAvailableDurations[best_fit[0]] <= 0:
             availableDays.remove(best_fit[0])
-        log_info(dayByDay)
+        log_debug(dayByDay)
 
     if "RaceIntensity" in futureMicrocycle.get("keyWorkouts", []):
-        log_info("Planning race intensity workout")
-        total_tss, secondsInZone = createWorkout(
+        log_debug("Planning race intensity workout")
+        total_tss, secondsInZone, intervalsSuggestions = createWorkout(
             loadsInfo["minTssPerWorkout"],
             loadsInfo["maxTssPerWorkout"],
             tss_per_activity,
@@ -1713,6 +1824,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                     "secondsInZone": secondsInZone,
                     "theoreticalDistance": theoreticalDistance,
                     "theoreticalTime": timedelta(seconds=total_seconds),
+                    "intervalSuggestions": intervalsSuggestions,
                 }
             )
             for zone in ZONES[raceInfo["mainSport"]].keys():
@@ -1721,20 +1833,20 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             dayAvailableDurations[best_fit[0]] -= total_seconds
             # if dayAvailableDurations[best_fit[0]] <= 0:
             availableDays.remove(best_fit[0])
-        log_info(dayByDay)
+        log_debug(dayByDay)
     remaining_tss = futureMicrocycle["theoreticalWeeklyTSS"] - sum(
         [workout["tss"] for day in dayByDay.values() for workout in day]
     )
     # Let's plan the remaining time in zones
     while remaining_tss > 30:
-        log_info("Planning a new workout")
+        log_debug("Planning a new workout")
         zones = []
         for zone in ZONES[raceInfo["mainSport"]].keys():
             if theoreticalTimeInZone[zone] > 0:
                 zones.append(zone)
         zones = sorted(zones, key=lambda x: x, reverse=True)
 
-        total_tss, secondsInZone = createWorkout(
+        total_tss, secondsInZone, intervalsSuggestions = createWorkout(
             loadsInfo["minTssPerWorkout"],
             100,
             tss_per_activity,
@@ -1747,7 +1859,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             cooldown_duration=600,
             activity=raceInfo["mainSport"],
         )
-        log_info(f"New workout, seconds in zone {secondsInZone}, total tss {total_tss}")
+        log_debug(f"New workout, seconds in zone {secondsInZone}, total tss {total_tss}")
 
         theoreticalDistance = sum(
             [
@@ -1763,8 +1875,8 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
             [secondsInZone[zone] for zone in ZONES[raceInfo["mainSport"]].keys()]
         )
         best_fit = findBestFitDay(total_seconds, availableDays, dayAvailableDurations)
-        log_info("Best fit")
-        log_info(best_fit)
+        log_debug("Best fit")
+        log_debug(best_fit)
         if best_fit is not None:
             if dayByDay.get(best_fit[0], None) is None:
                 dayByDay[best_fit[0]] = []
@@ -1776,6 +1888,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                     "secondsInZone": secondsInZone,
                     "theoreticalDistance": theoreticalDistance,
                     "theoreticalTime": timedelta(seconds=total_seconds),
+                    "intervalSuggestions": intervalsSuggestions,
                 }
             )
             for zone in ZONES[raceInfo["mainSport"]].keys():
@@ -1786,7 +1899,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
                 availableDays.remove(best_fit[0])
         remaining_tss -= total_tss
 
-        log_info(dayByDay)
+        log_debug(dayByDay)
 
     futureMicrocycle["dayByDay"] = dayByDay
 
@@ -1794,7 +1907,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
 
 
 def findBestFitDay(total_seconds, available_days, available_durations):
-    log_info(
+    log_debug(
         f"Finding best fit day, total seconds: {total_seconds}, available days: {available_days}, available durations: {available_durations}"
     )
     best_fit = None
@@ -1813,7 +1926,7 @@ def findBestFitDay(total_seconds, available_days, available_durations):
                     best_fit = (day, duration)
                 elif duration < best_fit[1]:
                     best_fit = (day, duration)
-    log_info(f"Best fit day: {best_fit}")
+    log_debug(f"Best fit day: {best_fit}")
     return best_fit
 
 
@@ -1826,7 +1939,7 @@ def createWorkout(
     max_time_in_zones,
     cumulative_max_tss_in_zones=[],
     zones=[3, 2, 1],
-    warmup_duration=600,
+    warmup_duration=1200,
     cooldown_duration=600,
     activity="Run",
 ):
@@ -1836,6 +1949,7 @@ def createWorkout(
     )
     total_tss = 0
     secondsInZone = {zone: 0 for zone in ZONES[activity].keys()}
+    intervalsSuggestions = []
     remaining_tss = target_tss
     log_debug("TSS to reach")
     log_debug(remaining_tss)
@@ -1845,6 +1959,15 @@ def createWorkout(
     warmup_tss = round(TSS_BY_ZONE_BY_SPORT[activity][1] * warmup_duration / 3600)
     total_tss += warmup_tss
     remaining_tss -= warmup_tss
+    intervalsSuggestions.append(
+        {
+            "intervalType": "Warmup",
+            "description": "Warmup",
+            "zone": 1,
+            "tss": warmup_tss,
+            "secondsInZone": {1: warmup_duration},
+        }
+    )
 
     # Cooldown
     secondsInZone[1] = secondsInZone[1] + cooldown_duration
@@ -1856,7 +1979,7 @@ def createWorkout(
     log_debug(remaining_tss)
 
     for zone in zones:
-        log_info(f"Zone {zone}, remaining time in zone {remaining_time_in_zone[zone]}")
+        log_debug(f"Zone {zone}, remaining time in zone {remaining_time_in_zone[zone]}")
         if remaining_time_in_zone[zone] > 0:
             # Depending on zone, we also add some associated Z1 rest time to recover between intervals
             recovery_factor = ZONE_RECOVERY_FACTOR_BY_SPORT[activity][zone]
@@ -1904,7 +2027,7 @@ def createWorkout(
                             associated_time_in_seconds
                         )
 
-            log_info(
+            log_debug(
                 f"min time in zone {min_time_in_zones.get(zone, 0)}, max time in zone {max_time_in_zones.get(zone, 9999999)}, remaining time in zone {remaining_time_in_zone[zone]}, max seconds in remaining tss {max_seconds_in_remaining_tss}, biggest constraint from cumulative max tss {biggest_constraint_from_cumulative_max_tss}"
             )
 
@@ -1931,17 +2054,47 @@ def createWorkout(
             )
             total_tss += recovery_tss
             remaining_tss -= recovery_tss
-            log_info(
+            
+            numberOfIntervals = int(seconds_in_zone/TYPICAL_DURATION_FOR_INTERVALS_BY_ZONE_BY_SPORT[activity][zone])+1
+            if numberOfIntervals > 0:
+                secondsInIntervals = round(seconds_in_zone / numberOfIntervals)
+            else:
+                secondsInIntervals = 0
+            log_info(f"Zone: {zone}, Number of intervals: {numberOfIntervals}, seconds in intervals: {secondsInIntervals}")
+            for i in range(numberOfIntervals):
+                intervalsSuggestions.append(
+                    {
+                        "intervalType": "Interval",
+                        "description": f"Interval {i+1}",
+                        "zone": zone,
+                        "tss": round(tss/numberOfIntervals),
+                        "secondsInZone": {zone: secondsInIntervals},
+                    }
+                )
+                intervalsSuggestions.append(
+                    {
+                        "intervalType": "Recovery",
+                        "description": f"Recovery {i+1}",
+                        "zone": 1,
+                        "tss": round(recovery_tss/numberOfIntervals),
+                        "secondsInZone": {1: secondsInIntervals},
+                    }
+                )
+            
+            
+            
+            
+            log_debug(
                 f"seconds_in_zone {seconds_in_zone}, tss {tss}, recovery_tss {recovery_tss}"
             )
 
     # if we are under the min tss, we add half Z1 half Z2 time
     if remaining_tss > 0:
-        log_info("Adding z1 and Z2 time")
-        log_info("Remaining TSS for this activity: ")
-        log_info(remaining_tss)
-        log_info("Remaining time in zone")
-        log_info(remaining_time_in_zone)
+        log_debug("Adding z1 and Z2 time")
+        log_debug("Remaining TSS for this activity: ")
+        log_debug(remaining_tss)
+        log_debug("Remaining time in zone")
+        log_debug(remaining_time_in_zone)
         tssz1toadd = remaining_tss / 2
         tssz2toadd = remaining_tss / 2
         secondsInZone[1] = secondsInZone[1] + round(
@@ -1952,8 +2105,38 @@ def createWorkout(
         )
         total_tss += remaining_tss
         remaining_tss = 0
+        
+        # add the z2 between the warmup and the first interval, and the z1 after the last interval
+        intervalsSuggestions.insert(1,
+            {
+                "intervalType": "Z2",
+                "description": "Z2",
+                "zone": 2,
+                "tss": round(tssz2toadd),
+                "secondsInZone": {2: round(tssz2toadd * 3600 / TSS_BY_ZONE_BY_SPORT[activity][2])},
+            }
+        )
+        intervalsSuggestions.append(
+            {
+                "intervalType": "Z1",
+                "description": "Z1",
+                "zone": 1,
+                "tss": round(tssz1toadd),
+                "secondsInZone": {1: round(tssz1toadd * 3600 / TSS_BY_ZONE_BY_SPORT[activity][1])},
+            }
+        )
+        
+    intervalsSuggestions.append(
+        {
+            "intervalType": "Cooldown",
+            "description": "Cooldown",
+            "zone": 1,
+            "tss": cooldown_tss,
+            "secondsInZone": {1: cooldown_duration},
+        }
+    )
 
-    return total_tss, secondsInZone
+    return total_tss, secondsInZone, intervalsSuggestions
 
 
 def currentLoadStatus(pastMicrocycles, cycleLength=4, mainSport="Run"):
@@ -2853,7 +3036,27 @@ def fetch_activities(after_ts):
         page += 1
     return activities
 
+def add_columns_if_not_exists(table_name, columns, session):
+    """
+    Add columns to a Snowflake table if they do not exist.
 
+    Args:
+        table_name (str): The name of the table to modify.
+        columns (dict): A dictionary of column names and types, e.g., {"column_name": "VARCHAR"}.
+        session (snowflake.snowpark.Session): The Snowflake session object.
+    """
+    # Fetch existing columns
+    existing_columns = session.sql(f"DESCRIBE TABLE {table_name}").collect()
+    existing_column_names = {row["name"].lower() for row in existing_columns}  # Ensure case-insensitivity
+
+    # Iterate through desired columns and add missing ones
+    for column_name, column_type in columns.items():
+        if column_name.lower() not in existing_column_names:
+            # Add the column if not exists
+            session.sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}").collect()
+            print(f"Added column {column_name} to {table_name}.")
+        else:
+            print(f"Column {column_name} already exists in {table_name}.")
 
 # Check if we have an access token in session_state
 if "access_token" not in st.session_state:
@@ -2862,44 +3065,92 @@ if "access_token" not in st.session_state:
 # Parse query parameters
 params = st.query_params
 
-session = Session.builder.configs(connection_parameters).create()
+# session = Session.builder.configs(connection_parameters).create()
 
-session.sql("""
-CREATE TABLE IF NOT EXISTS activities (
-    id INTEGER,
-    name VARCHAR,
-    start_date VARCHAR,
-    distance FLOAT,
-    moving_time INTEGER,
-    elapsed_time INTEGER,
-    total_elevation_gain FLOAT,
-    type VARCHAR,
-    PRIMARY KEY (id)
-)
-""").collect()
+# # Create or alter `activities` table
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS activities (
+#     id INTEGER,
+#     athlete_id INTEGER,
+#     session_id VARCHAR,
+#     name VARCHAR,
+#     start_date VARCHAR,
+#     distance FLOAT,
+#     moving_time INTEGER,
+#     elapsed_time INTEGER,
+#     total_elevation_gain FLOAT,
+#     type VARCHAR,
+#     PRIMARY KEY (id)
+# )
+# """).collect()
 
-session.sql("""
-CREATE TABLE IF NOT EXISTS microcycles (
-    strava_id INTEGER,
-    start_date VARCHAR,
-    end_date VARCHAR,
-    cycle_type VARCHAR,
-    theoretical_weekly_tss FLOAT,
-    PRIMARY KEY (strava_id, start_date)
-)
-""").collect()
+# # Example usage
+# add_columns_if_not_exists(
+#     "activities",
+#     {
+#         "athlete_id": "INTEGER",
+#         "session_id": "VARCHAR",
+#         "name": "VARCHAR",
+#         "start_date": "VARCHAR",
+#         "distance": "FLOAT",
+#         "moving_time": "INTEGER",
+#         "elapsed_time": "INTEGER",
+#         "total_elevation_gain": "FLOAT",
+#         "type": "VARCHAR",
+#     },
+#     session
+# )
 
-session.sql("""
-CREATE TABLE IF NOT EXISTS microcycle_days (
-    strava_id INTEGER,
-    start_date VARCHAR,
-    day VARCHAR,
-    workout_idx INTEGER,
-    zone VARCHAR,
-    seconds INTEGER,
-    PRIMARY KEY (strava_id, start_date, day, workout_idx, zone)
-)
-""").collect()
+# # Create or alter `microcycles` table
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS microcycles (
+#     strava_id INTEGER,
+#     session_id VARCHAR,
+#     start_date VARCHAR,
+#     end_date VARCHAR,
+#     cycle_type VARCHAR,
+#     theoretical_weekly_tss FLOAT,
+#     PRIMARY KEY (strava_id, start_date)
+# )
+# """).collect()
+# add_columns_if_not_exists(
+#     "microcycles",
+#     {
+#         "session_id": "VARCHAR",
+#         "start_date": "VARCHAR",
+#         "end_date": "VARCHAR",
+#         "cycle_type": "VARCHAR",
+#         "theoretical_weekly_tss": "FLOAT",
+#     },
+#     session
+# )
+
+# # Create or alter `microcycle_days` table
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS microcycle_days (
+#     strava_id INTEGER,
+#     session_id VARCHAR,
+#     start_date VARCHAR,
+#     day VARCHAR,
+#     workout_idx INTEGER,
+#     zone VARCHAR,
+#     seconds INTEGER,
+#     PRIMARY KEY (strava_id, start_date, day, workout_idx, zone)
+# )
+# """).collect()
+
+# add_columns_if_not_exists(
+#     "microcycle_days",
+#     {
+#         "session_id": "VARCHAR",
+#         "start_date": "VARCHAR",
+#         "day": "VARCHAR",
+#         "workout_idx": "INTEGER",
+#         "zone": "VARCHAR",
+#         "seconds": "INTEGER",
+#     },
+#     session
+# )
 
 # If we have a code from Strava, attempt to exchange it for a token
 if "code" in params and st.session_state["access_token"] is None:
@@ -2925,71 +3176,79 @@ if "code" in params and st.session_state["access_token"] is None:
         st.error("Failed to exchange code for token. Check your credentials and redirect URI.")
         st.stop()
 
-# If we still don't have a token, show login link
-if st.session_state["access_token"] is None:
-    st.write("You are not logged in.")
-    authorize_url = (
-        f"https://www.strava.com/oauth/authorize"
-        f"?client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&response_type=code"
-        f"&scope={scopes}"
-    )
 
-    
-    st.markdown(f"[Click here to login with Strava]({authorize_url})")
 else:
-    # We have a token. We can call Strava's API.
-    st.write("You are logged in! Your access token is stored in session_state.")
+    if cookies.ready() and "session_id" in cookies and st.session_state["access_token"] is not None:
+        # We have a token. We can call Strava's API.
+        st.write("You are logged in!")
 
-    # Fetch activities from Strava
-    access_token = st.session_state["access_token"]
-    headers = {"Authorization": f"Bearer {access_token}"}
-    now = datetime.utcnow()
-    two_months_ago = now - timedelta(days=60)
-    after_timestamp = int(two_months_ago.timestamp())
-    
-
-
-    activities = fetch_activities(after_timestamp)
-
-    if activities:
-        # Build a single MERGE statement with multiple values
-        values_clause = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(activities))
+        # Fetch activities from Strava
+        access_token = st.session_state["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+        now = datetime.utcnow()
+        two_months_ago = now - timedelta(days=60)
+        after_timestamp = int(two_months_ago.timestamp())
         
-        params = []
-        for activity in activities:
-            params.extend([
-                activity["id"],
-                activity["name"],
-                activity["start_date"],
-                activity["distance"],
-                activity["moving_time"],
-                activity["elapsed_time"],
-                activity["total_elevation_gain"],
-                activity["type"]
-            ])
 
-        query = f"""
-        MERGE INTO activities a
-        USING (
-            SELECT * FROM VALUES {values_clause} 
-            AS vals(id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
-        ) vals
-        ON a.id = vals.id
-        WHEN NOT MATCHED THEN
-            INSERT (id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
-            VALUES (vals.id, vals.name, vals.start_date, vals.distance, vals.moving_time, vals.elapsed_time, vals.total_elevation_gain, vals.type)
-        """
 
-        session.sql(query, params).collect()
+        activities = fetch_activities(after_timestamp)
 
-        st.success(f"Downloaded and stored {len(activities)} activities from the last two months.")
+        if activities:
+            # Build a single MERGE statement with multiple values
+            values_clause = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(activities))
+            
+            params = []
+            for activity in activities:
+                params.extend([
+                    activity["id"],
+                    st.session_state["athlete_id"],
+                    cookies["session_id"],
+                    activity["name"],
+                    activity["start_date"],
+                    activity["distance"],
+                    activity["moving_time"],
+                    activity["elapsed_time"],
+                    activity["total_elevation_gain"],
+                    activity["type"]
+                ])
+
+            query = f"""
+            MERGE INTO activities a
+            USING (
+                SELECT * FROM VALUES {values_clause} 
+                AS vals(id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+            ) vals
+            ON a.id = vals.id
+            WHEN NOT MATCHED THEN
+                INSERT (id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+                VALUES (vals.id, vals.name, vals.start_date, vals.distance, vals.moving_time, vals.elapsed_time, vals.total_elevation_gain, vals.type)
+            """
+            session = Session.builder.configs(connection_parameters).create()
+            session.sql(query, params).collect()
+
+            st.success(f"Downloaded and stored {len(activities)} activities from the last two months.")
 
 # First Row: My Level Fields
 st.header("Training Level and Preferences")
 with st.container():
-    st.subheader("My Level")
+    # Use columns for row layout
+    col1, col2 = st.columns([1, 8])  # Adjust column width ratios as needed
+
+    # Column 1: Subheader
+    with col1:
+        st.subheader("My Level")
+
+    # Column 2: Markdown Link
+    with col2:
+        if st.session_state["access_token"] is None:
+            authorize_url = (
+                f"https://www.strava.com/oauth/authorize"
+                f"?client_id={client_id}"
+                f"&redirect_uri={redirect_uri}"
+                f"&response_type=code"
+                f"&scope={scopes}"
+            )
+            st.markdown(f"[Click here to login with Strava to help us assess your level]({authorize_url})", unsafe_allow_html=True) 
     col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
 
     with col1:
@@ -3070,9 +3329,12 @@ with st.container():
     #     intensity = st.selectbox("Intensity", ["Low", "Medium", "High"], ["Low", "Medium", "High"].index(st.session_state["inputs"]["intensity"]), key="input_intensity",on_change=update_training_preferences)
 # Second Row: Three Columns for Races
 
-st.header("Race Planning")
 
-st.button("Add Race", on_click=add_race)
+col1, col2, col3 = st.columns([3, 10, 2])
+with col1:
+    st.header("Race Planning")
+with col3:
+    st.button("Add Race", on_click=add_race)
 # Create dynamic columns based on the number of races
 columns = st.columns(min(len(st.session_state["inputs"]["races"]), 3))  # Limit to 3 columns at a time
 
@@ -3192,8 +3454,8 @@ WEEK_DAYS = [
 
 # Normalize dayByDay data for visualization, allowing multiple workouts per day
 normalized_data = []
-log_debug("Data cycles")
-log_debug(data_cycles)
+log_debug(f"Data cycles {df_cycles.to_string()}")
+
 
 for cycle in data_cycles:
     start_date = cycle["startDate"]
@@ -3210,7 +3472,8 @@ for cycle in data_cycles:
                             # Include workout index in Activity to differentiate multiple workouts on the same day
                             "WorkoutIdx": idx + 1,
                             "Zone": str(zone),
-                            "Seconds": seconds,
+                            "Seconds": max(0,int(seconds)),
+                            "TimeFormatted": seconds_to_hhmmss(max(0,int(seconds))),
                         }
                     )
 
@@ -3250,16 +3513,16 @@ activity_df["Day"] = pd.Categorical(
 )
 
 # Log final DataFrame
-log_info(f"Final activity_df: {activity_df.to_string()}")
+log_debug(f"Final activity_df: {activity_df.to_string()}")
 
-if "athlete_id" in st.session_state:
+if cookies.ready():
     start_dates = [cycle["startDate"] for cycle in data_cycles]
-    athlete_id = st.session_state["athlete_id"]
+    athlete_id = st.session_state.get("athlete_id", "0")
 
     if start_dates:
         # Bulk delete existing microcycle_days and microcycles
         placeholders = ", ".join(["?"] * len(start_dates))
-        
+        session = Session.builder.configs(connection_parameters).create()
         # Delete from microcycle_days
         session.sql(
             f"DELETE FROM microcycle_days WHERE strava_id = ? AND start_date IN ({placeholders})",
@@ -3276,13 +3539,13 @@ if "athlete_id" in st.session_state:
     microcycle_values = []
     microcycle_params = []
     for cycle in data_cycles:
-        microcycle_values.append("(?, ?, ?, ?, ?)")
-        microcycle_params.extend([athlete_id, cycle["startDate"], cycle["endDate"], cycle["cycleType"], cycle["theoreticalWeeklyTSS"]])
+        microcycle_values.append("(?, ?, ?, ?, ?, ?)")
+        microcycle_params.extend([athlete_id, cookies["session_id"], cycle["startDate"], cycle["endDate"], cycle["cycleType"], cycle["theoreticalWeeklyTSS"]])
 
     if microcycle_values:
         mc_val_str = ", ".join(microcycle_values)
         session.sql(f"""
-        INSERT INTO microcycles (strava_id, start_date, end_date, cycle_type, theoretical_weekly_tss)
+        INSERT INTO microcycles (strava_id, session_id, start_date, end_date, cycle_type, theoretical_weekly_tss)
         VALUES {mc_val_str}
         """, microcycle_params).collect()
 
@@ -3294,17 +3557,17 @@ if "athlete_id" in st.session_state:
             for day, day_activities in cycle["dayByDay"].items():
                 for idx, activity in enumerate(day_activities):
                     for zone, seconds in activity["secondsInZone"].items():
-                        day_values.append("(?, ?, ?, ?, ?, ?)")
-                        day_params.extend([athlete_id, cycle["startDate"], day, idx + 1, zone, seconds])
+                        day_values.append("(?, ?, ?, ?, ?, ?, ?)")
+                        day_params.extend([athlete_id, cookies["session_id"], cycle["startDate"], day, idx + 1, zone, seconds])
 
     if day_values:
         day_val_str = ", ".join(day_values)
         session.sql(f"""
-        INSERT INTO microcycle_days (strava_id, start_date, day, workout_idx, zone, seconds)
+        INSERT INTO microcycle_days (strava_id, session_id, start_date, day, workout_idx, zone, seconds)
         VALUES {day_val_str}
         """, day_params).collect()
 
-    st.success("Microcycles have been successfully stored or updated in the database!")
+    # st.success("Microcycles have been successfully stored or updated in the database!")
 
 
 
@@ -3438,60 +3701,254 @@ with row_organization[0]:
             key=f"input_duration_{day}",
             on_change=update_training_preferences,
         )
+        
+
 
 with row_organization[1]:
     st.subheader("Day-by-Day Activity")
 
     if "selected_week" in st.session_state and st.session_state["selected_week"]:
         selected_week = st.session_state["selected_week"]
-        log_debug(f"Selected week: {selected_week}")
 
-        # Filter data for the selected week (+1 day offset if required)
+        # Filter and merge data
         filtered_activity_df = activity_df[
             activity_df["endDate"] == selected_week.date() + timedelta(days=1)
         ]
 
-        # Merge to ensure all days are present
         filtered_activity_df = full_week_data.merge(
             filtered_activity_df, on="Day", how="left"
         ).fillna({"WorkoutIdx": 0, "Zone": "0", "Seconds": 0})
 
-        # Set Day as categorical to control order
+        # Set Day as categorical
         filtered_activity_df["Day"] = pd.Categorical(
             filtered_activity_df["Day"], categories=WEEK_DAYS, ordered=True
         )
+        log_debug(f"Filtered activity df: {filtered_activity_df.to_string()}")
 
         if not filtered_activity_df.empty:
-            # Check if multiple workouts per day exist
-            max_workout_idx = filtered_activity_df["WorkoutIdx"].max()
+            # Generate tick values and labels
+            max_seconds = (
+                filtered_activity_df.groupby(["Day", "WorkoutIdx"], observed=True)["Seconds"]
+                .sum()
+                .max()
+            )
+            y_ticks = format_y_ticks(max_seconds)  # {0: '0:00:00', 816: '0:13:36', ...}
 
-            # Base chart
-            chart = (
-                alt.Chart(filtered_activity_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("Day:O", title="Day", sort=WEEK_DAYS),
-                    y=alt.Y("Seconds:Q", title="Time (seconds)", stack="zero"),
-                    color=alt.Color(
-                        "Zone:N",
-                        scale=alt.Scale(scheme="category20b"),
-                        legend=alt.Legend(title="Zones"),
-                    ),
-                    tooltip=["Zone", "Seconds", "WorkoutIdx"],
-                )
-                .properties(width=800, height=400)
-                .configure_scale(
-                    bandPaddingInner=0.3,  # Adjust inner padding
-                    bandPaddingOuter=0.1,  # Adjust outer padding
-                )
+            # Convert ticks to Vega-Lite compatible scale
+            y_domain = list(y_ticks.keys())  # Tick values
+            y_range = list(y_ticks.values())  # Formatted labels
+            
+            log_debug(f"Y ticks: {y_ticks}, Y domain: {y_domain}, Y range: {y_range}, max_seconds: {max_seconds}")
+
+            # Modify the chart to use domain and range for custom Y-axis labels
+            label_expr = "{ " + ", ".join([f"{k}: '{v}'" for k, v in y_ticks.items()]) + " }[datum.value] || ''"
+            
+            # Check for multiple workouts per day
+            max_workout_idx = filtered_activity_df["WorkoutIdx"].max()
+            x_offset = (
+                {"field": "WorkoutIdx", "type": "ordinal"}
+                if max_workout_idx > 1
+                else None
             )
 
-            # Only add xOffset if more than one workout per day
-            if max_workout_idx > 1:
-                chart = chart.encode(xOffset="WorkoutIdx:N")
+            # Create the Vega-Lite chart_spec
+            chart_spec = {
+                "width": 800,
+                "height": 400,
+                "data": {"values": filtered_activity_df.to_dict(orient="records")},
+                "mark": {"type": "bar"},
+                "encoding": {
+                    "x": {
+                        "field": "Day",
+                        "type": "ordinal",
+                        "title": "Day",
+                        "sort": WEEK_DAYS
+                    },
+                    "y": {
+                        "field": "Seconds",
+                        "type": "quantitative",
+                        "title": "Time",
+                        "axis": {
+                            "title": "Time",
+                            "values": y_domain,
+                            "labelExpr": label_expr
+                        }
+                    },
+                    "color": {
+                        "field": "Zone",
+                        "type": "quantitative",
+                        "scale": {
+                            "domain": [1, 7],
+                            "range": ["#ADD8E6", "#FF0000"]
+                        },
+                        "legend": {"title": "Zones"}
+                    },
+                    "tooltip": [
+                        {"field": "Zone", "type": "nominal", "title": "Zone"},
+                        {"field": "TimeFormatted", "type": "nominal", "title": "Time"},
+                        {"field": "WorkoutIdx", "type": "ordinal", "title": "Workout"}
+                    ],
+                    "opacity": {
+                        "condition": {
+                            "param": "select_workout",
+                            "value": 1
+                        },
+                        "value": 0.4
+                    }
+                },
+                "params": [
+                    {
+                        "name": "select_workout",
+                        "select": {
+                            "type": "point",
+                            "fields": ["Day", "WorkoutIdx"]
+                        }
+                    }
+                ]
+            }
 
-            st.altair_chart(chart, use_container_width=True)
+            # Conditionally add xOffset if more than 1 WorkoutIdx exists
+            if x_offset:
+                chart_spec["encoding"]["xOffset"] = x_offset
+            # Render the Vega-Lite chart and capture selection
+            event2 = st.vega_lite_chart(
+                chart_spec,
+                on_select="rerun",
+                use_container_width=True
+            )
+
+            # Extract the selected point and update session_state
+            if event2 and "selection" in event2:
+                selected_data = event2["selection"]["select_workout"]
+                log_debug(f"Selected data: {selected_data}")
+                if selected_data:
+                    selected_point = selected_data[0]  # Take the first selected point
+                    selected_day = selected_point.get("Day")
+                    selected_workout = selected_point.get("WorkoutIdx")
+                    if selected_day and selected_workout:
+                        st.session_state["selected_day"] = selected_day
+                        st.session_state["selected_workout"] = selected_workout
+                        log_debug(f"Selected Day: {selected_day}, WorkoutIdx: {selected_workout}")
         else:
-            st.write("DEBUG: No activity data found for the selected week.")
+            st.write("No activity data found for the selected week.")
     else:
-        st.write("DEBUG: No week selected. Waiting for user interaction.")
+        st.write("No week selected. Waiting for user interaction.")
+        
+        
+
+    log_debug(f"Dump session state keys: {st.session_state.keys()}")
+    if (
+        "selected_week" in st.session_state
+        and st.session_state["selected_week"]
+        and "selected_day" in st.session_state
+        and "selected_workout" in st.session_state
+    ):
+        selected_week = st.session_state["selected_week"].to_pydatetime()+ timedelta(days=1)  # Convert to date
+        log_debug(f"Selected week: {selected_week} and type {type(selected_week)}")
+        
+        week = None
+        log_debug(f"Data cycles: {data_cycles}")
+        for microcycle in data_cycles:
+            # Normalize endDate for comparison
+            log_debug(f"Microcycle endDate: {microcycle['endDate']} and type {type(microcycle['endDate'])}")
+            if isinstance(microcycle["endDate"], datetime):
+                microcycle["endDate"] = microcycle["endDate"].date()
+            if microcycle["endDate"] == selected_week.date():
+                week = microcycle
+                break
+
+        if week:
+            log_debug(f"Selected week: {week}")  # Remove .to_string()
+            selected_workout = st.session_state["selected_workout"]
+            log_debug(f"Selected workout: {selected_workout}")
+            selected_day = st.session_state["selected_day"]
+            log_debug(f"Selected day: {selected_day}")
+
+            # Fetch the activity details
+            activity = week["dayByDay"][selected_day][selected_workout - 1]
+            log_info(f"Activity: {activity}")
+            # Extract and build timeline data
+            if "intervalSuggestions" in activity:
+                # Extract and build timeline data
+                intervals = activity["intervalSuggestions"]
+
+                # Initialize variables for accumulated time
+                timeline_data = []
+                current_time = 0
+
+                # Loop through intervals to accumulate time
+                for interval in intervals:
+                    for zone, seconds in interval["secondsInZone"].items():
+                        timeline_data.append({
+                            "start_time_timeline": current_time,
+                            "end_time_timeline": current_time + seconds,
+                            "duration_timeline": seconds_to_hhmmss(max(0, int(seconds))),
+                            "zone_timeline": int(zone),  # Ensure zone is numeric
+                            "description_timeline": interval["description"],
+                            "tss_timeline": interval["tss"]
+                        })
+                        current_time += seconds
+                
+                x_ticks = format_x_ticks(current_time)
+                label_expr = "{ " + ", ".join([f"{k}: '{v}'" for k, v in x_ticks.items()]) + " }[datum.value] || ''"
+                log_info(f"label_expr: {label_expr}")
+                # Convert to DataFrame
+                timeline_df = pd.DataFrame(timeline_data)
+                log_debug(f"Timeline DataFrame:\n{timeline_df}")
+                log_debug(f"Timeline DataFrame todict records: {timeline_df.to_dict(orient='records')}")
+        
+
+                chart_spec3 = {
+                    "width": 800,
+                    "height": 400,
+                    "data": {"values": timeline_df.to_dict(orient="records")},
+                    "mark": {"type": "rect"},
+                    "encoding": {
+                        "x": {
+                            "field": "start_time_timeline",
+                            "type": "quantitative",
+                            "title": "Time",
+                            "axis": {
+                                "title": "Time",
+                                "values": list(x_ticks.keys()),
+                                "labelExpr": label_expr
+                            }
+                        },
+                        "x2": {
+                            "field": "end_time_timeline",
+                            "type": "quantitative"
+                        },
+                        "y": {
+                            "field": "zone_timeline",
+                            "type": "quantitative",
+                            "title": "Zone",
+                            "scale": {"domain": [0, 7]},
+                            "axis": {
+                                "values": [0, 1, 2, 3, 4, 5, 6, 7],
+                                "title": "Zone"
+                            }
+                        },
+                        "color": {
+                            "field": "zone_timeline",
+                            "type": "quantitative",
+                            "scale": {
+                                "domain": [1, 7],
+                                "range": ["#ADD8E6", "#FF0000"]  
+                            },
+                            "legend": {"title": "Zone"}
+                        },
+                        "tooltip": [
+                            {"field": "description_timeline", "type": "nominal", "title": "Interval"},
+                            {"field": "duration_timeline", "type": "nominal", "title": "Duration (s)"},
+                            {"field": "zone_timeline", "type": "quantitative", "title": "Zone"},
+                            {"field": "tss_timeline", "type": "quantitative", "title": "TSS"}
+                        ]
+                    }
+                }
+                # Render the chart
+                st.vega_lite_chart(chart_spec3, use_container_width=True)
+
+            else:
+                st.error("No interval suggestions found for the selected workout.")
+        else:
+            st.error("No data found for the selected week.")
