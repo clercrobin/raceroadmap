@@ -1072,26 +1072,36 @@ def planWeekLoads(
             currentCycleNumber = 1
             currentIndexInCycle = 1
     else:
-        number_of_specific_weeks = (
-            numberOfWeeksAvailableFondSpe - numberOfFondamentalWeeks
-        )
-        currentCycleNumber = (
-            fondamentalWeeks[-1]["cycleNumber"] + 1
-            if fondamentalWeeks[-1]["indexInCycle"] == loadsInfo["cycleLength"] - 1
-            else fondamentalWeeks[-1]["cycleNumber"]
-        )
-        currentIndexInCycle = (
-            fondamentalWeeks[-1]["indexInCycle"] + 1
-            if fondamentalWeeks[-1]["indexInCycle"] < loadsInfo["cycleLength"] - 1
-            else 1
-        )
-        lastRestingWeekIndex = 0
-        for i in range(len(fondamentalWeeks)):
-            if fondamentalWeeks[i].get("actualResting", None) or fondamentalWeeks[
-                i
-            ].get("theoreticalResting", None):
-                lastRestingWeekIndex = i
-        nextRestingWeek = len(fondamentalWeeks) - lastRestingWeekIndex - 2
+        if len(fondamentalWeeks) > 1:
+            number_of_specific_weeks = (
+                numberOfWeeksAvailableFondSpe - numberOfFondamentalWeeks
+            )
+            currentCycleNumber = (
+                fondamentalWeeks[-1]["cycleNumber"] + 1
+                if fondamentalWeeks[-1]["indexInCycle"] == loadsInfo["cycleLength"] - 1
+                else fondamentalWeeks[-1]["cycleNumber"]
+            )
+            currentIndexInCycle = (
+                fondamentalWeeks[-1]["indexInCycle"] + 1
+                if fondamentalWeeks[-1]["indexInCycle"] < loadsInfo["cycleLength"] - 1
+                else 1
+            )
+            lastRestingWeekIndex = 0
+            for i in range(len(fondamentalWeeks)):
+                if fondamentalWeeks[i].get("actualResting", None) or fondamentalWeeks[
+                    i
+                ].get("theoreticalResting", None):
+                    lastRestingWeekIndex = i
+            nextRestingWeek = len(fondamentalWeeks) - lastRestingWeekIndex - 2
+        else:
+            number_of_specific_weeks = numberOfWeeksAvailableFondSpe
+            currentCycleNumber = 1
+            currentIndexInCycle = 1
+            nextRestingWeek = loadsInfo["cycleLength"] - 1
+        
+        if race_number == 0 and loadsInfo["declaredNextRestingWeek"] is not None:
+            nextRestingWeek = loadsInfo["declaredNextRestingWeek"]
+        
         specificWeeks = getSpecificWeeks(
             number_of_specific_weeks,
             loadsInfo["endLoad"],
