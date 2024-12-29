@@ -15,6 +15,17 @@ from snowflake.snowpark.session import Session
 from snowflake.snowpark.functions import col
 from streamlit_cookies_manager import EncryptedCookieManager
 import uuid
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.dates as mdates
+import threading
+from queue import Queue
+import json
+import time
+from collections import defaultdict
+from streamlit.runtime.scriptrunner import add_script_run_ctx,get_script_run_ctx
+
+
 
 # from streamlit_vega_lite import vega_lite_events
 logging.basicConfig(filename="output.log", level=logging.INFO)
@@ -47,28 +58,19 @@ iframe[title="streamlit_cookies_manager.cookie_manager.CookieManager.sync_cookie
 # Inject the custom CSS
 st.markdown(custom_css, unsafe_allow_html=True)
 
-cookies = EncryptedCookieManager(
-    prefix="my_app",  # Replace with your app's name or namespace
-    password="supersecret",  # Ensure this is secure
-)
 
-if cookies.ready():
-    # Get or set the session ID in the cookie
-    if "session_id" not in cookies:
-        cookies["session_id"] = str(uuid.uuid4())
-        cookies.save()
-
-    # Retrieve the session ID from the cookie
-    session_id = cookies["session_id"]
 # else:
 #     # st.warning("Cookies are not ready or supported!")
 #     pass
-
+STRAVA_API_URL = "https://www.strava.com/api/v3"
 # Use Streamlit secrets management
 client_id = st.secrets.get("strava", {}).get("client_id", os.getenv("STRAVA_CLIENT_ID"))
 client_secret = st.secrets.get("strava", {}).get("client_secret", os.getenv("STRAVA_CLIENT_SECRET"))
 redirect_uri = st.secrets.get("strava", {}).get("redirect_uri", os.getenv("STRAVA_REDIRECT_URI"))
-scopes = "read,activity:read_all"
+scopes = "read,activity:read_all,activity:write"
+
+imgur_client_id = st.secrets.get("imgur", {}).get("client_id", os.getenv("IMGUR_CLIENT_ID"))
+imgur_client_secret = st.secrets.get("imgur", {}).get("client_secret", os.getenv("IMGUR_CLIENT_SECRET"))
 
 connection_parameters = {
     "account": st.secrets.get("snowflake", {}).get("account", os.getenv("SNOWFLAKE_ACCOUNT")),
@@ -79,6 +81,13 @@ connection_parameters = {
     "database": st.secrets.get("snowflake", {}).get("database", os.getenv("SNOWFLAKE_DATABASE")),
     "schema": st.secrets.get("snowflake", {}).get("schema", os.getenv("SNOWFLAKE_SCHEMA")),
 }
+
+# Initialize session state
+if "db_sync_status" not in st.session_state:
+    st.session_state["db_sync_status"] = "pending"
+
+if "result_queue" not in st.session_state:
+    st.session_state["result_queue"] = Queue()
 
 
 def log_debug(message):
@@ -93,6 +102,58 @@ def log_info(message):
 
 def log_error(message):
     logging.error(message)
+
+def log_warning(message):
+    logging.warning(message)
+    
+def get_or_create_session_id(cookies):
+    # Generate a temporary session ID
+    session_id = str(uuid.uuid4())
+    timeout = 5  # Timeout in seconds to wait for cookies to be ready
+    interval = 0.1  # Interval to check readiness
+
+    start_time = time.time()
+    while not cookies.ready():
+        if time.time() - start_time > timeout:
+            log_warning("Cookies not ready, using temporary session ID.")
+            return session_id  # Return the temporary session ID after timeout
+        time.sleep(interval)
+
+    # Overwrite the temporary session ID with the one from the cookies
+    if "session_id" not in cookies:
+        cookies["session_id"] = session_id
+        cookies.save()
+    else:
+        session_id = cookies["session_id"]
+
+    return session_id
+cookies = EncryptedCookieManager(
+    prefix="my_app",  # Replace with your app's name or namespace
+    password="supersecret",  # Ensure this is secure
+)
+
+session_id = get_or_create_session_id(cookies)
+log_info(f"Session ID: {session_id}")
+
+def create_snowflake_session(connection_parameters):
+    """
+    Create or refresh a Snowflake session.
+    """
+    try:
+        session = Session.builder.configs(connection_parameters).create()
+        return session
+    except ProgrammingError as e:
+        if "Authentication token has expired" in str(e):
+            log_info("Snowflake token has expired. Reauthenticating...")
+            # Retry session creation
+            session = Session.builder.configs(connection_parameters).create()
+            return session
+        else:
+            log_error(f"Failed to create Snowflake session: {e}")
+            raise
+
+def final_date(d):
+    return d if isinstance(d, date) and not isinstance(d, datetime) else d.date()
 
 # Function to convert seconds to HH:MM:SS format
 def seconds_to_hhmmss(seconds):
@@ -825,14 +886,7 @@ def planWeekLoads(
     completedWorkouts,
     race_number
 ):
-    log_debug("Planning week loads")
-    log_debug(loadsInfo)
-    log_debug(datesInfo)
-    log_debug(raceInfo)
-    log_debug(weekInfo)
-    log_debug(currentPlannedMacrocycles)
-    log_debug(currentPlannedMicrocycles)
-    log_debug(completedWorkouts)
+    log_debug(f"Planning week with loadsInfo: {loadsInfo}, datesInfo: {datesInfo}, raceInfo: {raceInfo}, weekInfo: {weekInfo}, currentPlannedMacrocycles: {currentPlannedMacrocycles}, currentPlannedMicrocycles: {currentPlannedMicrocycles}, completedWorkouts: {completedWorkouts}")
 
     totalMacrocycles = currentPlannedMacrocycles.copy()
     totalMicrocycles = currentPlannedMicrocycles.copy()
@@ -968,27 +1022,26 @@ def planWeekLoads(
         )
         + timedelta(days=1)
     )
+    
+    
+    daysAhead = 7 - datesInfo["currentDate"].weekday() % 7
+    if daysAhead == 0:
+        daysAhead = 7
+    nextMondayDate = final_date(datesInfo["currentDate"] + timedelta(days=(daysAhead)))
 
-    mondayBeginningOfPreComp = dateOfStartPreComp - timedelta(
+    mondayBeginningOfPreComp = final_date(dateOfStartPreComp - timedelta(
         days=dateOfStartPreComp.weekday()
-    )
-    numberOfWeeksAvailableFondSpe = (
-        dateOfStartPreComp
-        - date(
-            datesInfo["currentDate"].year,
-            datesInfo["currentDate"].month,
-            datesInfo["currentDate"].day,
-        )
-        - timedelta(days=7)
-    ).days // 7 # begins after the current week
-    if currentMicrocycle == {} and race_number == 0:
+    ))
+    numberOfWeeksAvailableFondSpe =round((
+        mondayBeginningOfPreComp
+        - nextMondayDate
+    ).days / 7) # begins after the current week
+    if currentMicrocycle == {} and race_number != 0 and datesInfo["currentDate"].weekday() < 6:
         numberOfWeeksAvailableFondSpe += 1
     if dateOfStartPreComp.weekday() != 0:
         numberOfWeeksAvailableFondSpe += 1
-    if datesInfo["currentDate"].weekday() ==0 and race_number == 0:
-        numberOfWeeksAvailableFondSpe -= 1
     log_info(
-        f"Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}, current microcycle: {currentMicrocycle}, race number: {race_number}, date of start precomp weekday: {dateOfStartPreComp.weekday()}, current date {datesInfo['currentDate']}, number of days: {(dateOfStartPreComp - date(datesInfo['currentDate'].year, datesInfo['currentDate'].month, datesInfo['currentDate'].day)).days}"
+        f"next monday date: {nextMondayDate} Date of start precomp: {dateOfStartPreComp}, monday before precomp: {mondayBeginningOfPreComp}, number of weeks available fond spe: {numberOfWeeksAvailableFondSpe}, current microcycle: {currentMicrocycle}, race number: {race_number}, date of start precomp weekday: {dateOfStartPreComp.weekday()}, current date {datesInfo['currentDate']}, number of days: {(dateOfStartPreComp - date(datesInfo['currentDate'].year, datesInfo['currentDate'].month, datesInfo['currentDate'].day)).days}"
     )
 
     specificWeeks = []
@@ -1004,16 +1057,20 @@ def planWeekLoads(
                 lastRestingWeekIndex = i
 
         nextRestingWeek = len(fondamentalWeeks) - lastRestingWeekIndex - 2
-        currentCycleNumber = (
-            fondamentalWeeks[-1]["cycleNumber"] + 1
-            if fondamentalWeeks[-1]["indexInCycle"] == loadsInfo["cycleLength"] - 1
-            else fondamentalWeeks[-1]["cycleNumber"]
-        )
-        currentIndexInCycle = (
-            fondamentalWeeks[-1]["indexInCycle"] + 1
-            if fondamentalWeeks[-1]["indexInCycle"] < loadsInfo["cycleLength"] - 1
-            else 1
-        )
+        if len(fondamentalWeeks) > 1:
+            currentCycleNumber = (
+                fondamentalWeeks[-1]["cycleNumber"] + 1
+                if fondamentalWeeks[-1]["indexInCycle"] == loadsInfo["cycleLength"] - 1
+                else fondamentalWeeks[-1]["cycleNumber"]
+            )
+            currentIndexInCycle = (
+                fondamentalWeeks[-1]["indexInCycle"] + 1
+                if fondamentalWeeks[-1]["indexInCycle"] < loadsInfo["cycleLength"] - 1
+                else 1
+            )
+        else:
+            currentCycleNumber = 1
+            currentIndexInCycle = 1
     else:
         number_of_specific_weeks = (
             numberOfWeeksAvailableFondSpe - numberOfFondamentalWeeks
@@ -1043,6 +1100,8 @@ def planWeekLoads(
             currentCycleNumber + 1,
             currentIndexInCycle,
         )
+        
+    log_info(f"number of fondamentalWeeks: {len(fondamentalWeeks)}, number of specific weeks: {len(specificWeeks)}")
 
     planBeforePreComp = fondamentalWeeks + specificWeeks
 
@@ -1070,10 +1129,11 @@ def planWeekLoads(
         currentHandableLongIntensity = loadsInfo["currentLongIntensityTSS"]
 
     for i, week in enumerate(planBeforePreComp):
+        ratio = 1
         if week["theoreticalResting"]:
-            continue
-        if "Long" in week.get("keyWorkouts", None):
-            week["theoreticalLongWorkoutTSS"] = currentHandableBiggestWorkout
+            ratio = 0.7
+        if "Long" in week.get("keyWorkouts", []):
+            week["theoreticalLongWorkoutTSS"] = currentHandableBiggestWorkout * ratio
             number_of_future_weeks_having_long_in_key_workouts = 0
             for future_week in planBeforePreComp[i + 1 :]:
                 if "Long" in future_week.get("keyWorkouts", []):
@@ -1084,8 +1144,8 @@ def planWeekLoads(
                 - currentHandableBiggestWorkout
             ) / (number_of_future_weeks_having_long_in_key_workouts + 1)
 
-        if "ShortIntensity" in week.get("keyWorkouts", None):
-            week["theoreticalShortIntensityTSS"] = currentHandableShortIntensity
+        if "ShortIntensity" in week.get("keyWorkouts", []):
+            week["theoreticalShortIntensityTSS"] = currentHandableShortIntensity * ratio
             number_of_future_weeks_having_short_in_key_workouts = 0
             for future_week in planBeforePreComp[i + 1 :]:
                 if "ShortIntensity" in future_week.get("keyWorkouts", []):
@@ -1096,8 +1156,8 @@ def planWeekLoads(
                 - currentHandableShortIntensity
             ) / (number_of_future_weeks_having_short_in_key_workouts + 1)
 
-        if "theoreticalRaceIntensityTSS" in week.get("keyWorkouts", None):
-            week["theoreticalRaceIntensityTSS"] = currentHandableRaceIntensity
+        if "theoreticalRaceIntensityTSS" in week.get("keyWorkouts", []):
+            week["theoreticalRaceIntensityTSS"] = currentHandableRaceIntensity * ratio
             number_of_future_week_having_race_in_key_workouts = 0
             for future_week in planBeforePreComp[i + 1 :]:
                 if "RaceIntensity" in future_week.get("keyWorkouts", []):
@@ -1107,8 +1167,8 @@ def planWeekLoads(
                 - currentHandableRaceIntensity
             ) / (number_of_future_week_having_race_in_key_workouts + 1)
 
-        if "LongIntensity" in week.get("keyWorkouts", None):
-            week["theoreticalLongIntensityTSS"] = currentHandableLongIntensity
+        if "LongIntensity" in week.get("keyWorkouts", []):
+            week["theoreticalLongIntensityTSS"] = currentHandableLongIntensity * ratio
             number_of_future_week_having_long_intensity_in_key_workouts = 0
             for future_week in planBeforePreComp[i + 1 :]:
                 if "LongIntensity" in future_week.get("keyWorkouts", []):
@@ -1130,12 +1190,12 @@ def planWeekLoads(
                     macrocycle,
                     {
                         "endDate": datesInfo["endDate"],
-                        "startDate": datesInfo["endDate"]
+                        "startDate": max(final_date(datesInfo["endDate"]
                         - timedelta(
                             days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                                 raceInfo["objective"]
                             ][raceInfo["eventSize"]]["Compet"]
-                        ) + timedelta(days=1),
+                        ) + timedelta(days=1)), final_date(datesInfo["currentDate"])),
                         "totalTSS": raceInfo["eventTSS"]
                         * COMPET_CYCLE_TSS_MULTIPLICATOR_BY_SPORT_BY_OBJECTIVE_OBJECTIVE_SIZE[
                             raceInfo["mainSport"]
@@ -1147,12 +1207,12 @@ def planWeekLoads(
             log_debug("Creating competition macrocycle")
             competitionMacrocycle = {
                 "cycleType": "Compet",
-                "startDate": datesInfo["endDate"]
+                "startDate": max(final_date(datesInfo["endDate"]
                 - timedelta(
                     days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                         raceInfo["objective"]
                     ][raceInfo["eventSize"]]["Compet"]
-                ) + timedelta(days=1),
+                ) + timedelta(days=1)), final_date(datesInfo["currentDate"])),
                 "endDate": datesInfo["endDate"],
                 "totalTSS": raceInfo["eventTSS"]
                 * COMPET_CYCLE_TSS_MULTIPLICATOR_BY_SPORT_BY_OBJECTIVE_OBJECTIVE_SIZE[
@@ -1169,12 +1229,12 @@ def planWeekLoads(
                     microcycle,
                     {
                         "endDate": datesInfo["endDate"],
-                        "startDate": datesInfo["endDate"]
+                        "startDate": max(final_date(datesInfo["endDate"]
                         - timedelta(
                             days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                                 raceInfo["objective"]
                             ][raceInfo["eventSize"]]["Compet"]
-                        ) + timedelta(days=1),
+                        ) + timedelta(days=1)), final_date(datesInfo["currentDate"])),
                         "theoreticalWeeklyTSS": raceInfo["eventTSS"]
                         * COMPET_CYCLE_TSS_MULTIPLICATOR_BY_SPORT_BY_OBJECTIVE_OBJECTIVE_SIZE[
                             raceInfo["mainSport"]
@@ -1186,12 +1246,12 @@ def planWeekLoads(
             log_debug("Creating competition microcycle")
             competitionMicrocycle = {
                 "cycleType": "Compet",
-                "startDate": datesInfo["endDate"]
+                "startDate": max(final_date(datesInfo["endDate"]
                 - timedelta(
                     days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                         raceInfo["objective"]
                     ][raceInfo["eventSize"]]["Compet"]
-                ) + timedelta(days=1),
+                ) + timedelta(days=1)), final_date(datesInfo["currentDate"])),
                 "endDate": datesInfo["endDate"],
                 "theoreticalWeeklyTSS": raceInfo["eventTSS"]
                 * COMPET_CYCLE_TSS_MULTIPLICATOR_BY_SPORT_BY_OBJECTIVE_OBJECTIVE_SIZE[
@@ -1199,19 +1259,20 @@ def planWeekLoads(
                 ][raceInfo["objective"]][raceInfo["eventSize"]],
             }
             currentPlanningDate = competitionMicrocycle["startDate"]
-        log_debug("Current planning date")
-        log_debug(currentPlanningDate)
-        log_debug(datesInfo["currentDate"])
+        log_info("Current planning date")
+        log_info(currentPlanningDate)
+        log_info(datesInfo["currentDate"])
         if datesInfo["currentDate"] >= datetime(
             currentPlanningDate.year, currentPlanningDate.month, currentPlanningDate.day
         ):
             # We are in the competition cycle
-            log_debug("We are in the competition cycle")
+            log_info("We are in the competition cycle")
             planAnotherWeek = False
         else:
-            log_debug("We are before the competition cycle")
+            log_info("We are before the competition cycle")
             currentStep = "Pre-Compet"
-
+    precompetMicrocycle = {}
+    precompetMacrocycle = {}
     if currentStep == "Pre-Compet":
         found = False
         for i, macrocycle in enumerate(totalMacrocycles):
@@ -1223,17 +1284,20 @@ def planWeekLoads(
                     {
                         "endDate": competitionMacrocycle["startDate"]
                         - timedelta(days=1),
-                        "startDate": competitionMacrocycle["startDate"]
+                        "startDate": max(final_date(competitionMacrocycle["startDate"]
                         - timedelta(
                             days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                                 raceInfo["objective"]
                             ][raceInfo["eventSize"]]["Pre-Compet"]
-                        ),
+                        )), final_date(datesInfo["currentDate"])),
                         "totalTSS": loadsInfo["endLoad"]
                         / 2
-                        * MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
-                            raceInfo["objective"]
-                        ][raceInfo["eventSize"]]["Pre-Compet"]
+                        * ((competitionMacrocycle["startDate"] - timedelta(days=1)-max(final_date(competitionMacrocycle["startDate"]
+                            - timedelta(
+                                days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
+                                    raceInfo["objective"]
+                                ][raceInfo["eventSize"]]["Pre-Compet"]
+                            )), final_date(datesInfo["currentDate"]))).days + 1)
                         / 7,
                         "theoreticalResting": True,
                     },
@@ -1242,18 +1306,21 @@ def planWeekLoads(
             log_debug("Creating precompet macrocycle")
             precompetMacrocycle = {
                 "cycleType": "Pre-Compet",
-                "startDate": competitionMacrocycle["startDate"]
+                "startDate": max(final_date(competitionMacrocycle["startDate"]
                 - timedelta(
                     days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                         raceInfo["objective"]
                     ][raceInfo["eventSize"]]["Pre-Compet"]
-                ),
+                )), final_date(datesInfo["currentDate"])),
                 "endDate": competitionMacrocycle["startDate"] - timedelta(days=1),
                 "theoreticalWeeklyTSS": loadsInfo["endLoad"]
                 / 2
-                * MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
-                    raceInfo["objective"]
-                ][raceInfo["eventSize"]]["Pre-Compet"]
+                * ((competitionMacrocycle["startDate"] - timedelta(days=1)-max(final_date(competitionMacrocycle["startDate"]
+                - timedelta(
+                    days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
+                        raceInfo["objective"]
+                    ][raceInfo["eventSize"]]["Pre-Compet"]
+                )), final_date(datesInfo["currentDate"]))).days + 1)
                 / 7,
                 "theoreticalResting": True,
             }
@@ -1267,17 +1334,20 @@ def planWeekLoads(
                     {
                         "endDate": competitionMicrocycle["startDate"]
                         - timedelta(days=1),
-                        "startDate": competitionMicrocycle["startDate"]
+                        "startDate": max(final_date(competitionMicrocycle["startDate"]
                         - timedelta(
                             days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                                 raceInfo["objective"]
                             ][raceInfo["eventSize"]]["Pre-Compet"]
-                        ),
+                        )), final_date(datesInfo["currentDate"])),
                         "theoreticalWeeklyTSS": loadsInfo["endLoad"]
                         / 2
-                        * MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
-                            raceInfo["objective"]
-                        ][raceInfo["eventSize"]]["Pre-Compet"]
+                        * ((competitionMacrocycle["startDate"] - timedelta(days=1)-max(final_date(competitionMacrocycle["startDate"]
+                            - timedelta(
+                                days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
+                                    raceInfo["objective"]
+                                ][raceInfo["eventSize"]]["Pre-Compet"]
+                            )), final_date(datesInfo["currentDate"]))).days + 1)
                         / 7,
                         "theoreticalResting": True,
                     },
@@ -1287,18 +1357,21 @@ def planWeekLoads(
             log_debug("Creating precompet microcycle")
             precompetMicrocycle = {
                 "cycleType": "Pre-Compet",
-                "startDate": competitionMicrocycle["startDate"]
+                "startDate": max(final_date(competitionMicrocycle["startDate"]
                 - timedelta(
                     days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
                         raceInfo["objective"]
                     ][raceInfo["eventSize"]]["Pre-Compet"]
-                ),
+                )), final_date(datesInfo["currentDate"])),
                 "endDate": competitionMicrocycle["startDate"] - timedelta(days=1),
                 "theoreticalWeeklyTSS": loadsInfo["endLoad"]
                 / 2
-                * MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
-                    raceInfo["objective"]
-                ][raceInfo["eventSize"]]["Pre-Compet"]
+                * ((competitionMacrocycle["startDate"] - timedelta(days=1)-max(final_date(competitionMacrocycle["startDate"]
+                - timedelta(
+                    days=MAX_CYCLES_TIMING_DAYS_TO_RACE_BY_OBJECTIVE_BY_OBJECTIVE_SIZE[
+                        raceInfo["objective"]
+                    ][raceInfo["eventSize"]]["Pre-Compet"]
+                )), final_date(datesInfo["currentDate"]))).days + 1)
                 / 7,
                 "theoreticalResting": True,
             }
@@ -1314,11 +1387,12 @@ def planWeekLoads(
         else:
             log_debug("We are before the precompet cycle")
             currentStep = "Before Pre Comp"
+    
+    newPlanBeforePreComp = []
+    
     if currentStep == "Before Pre Comp":
         # We begin next monday after current date
-        newPlanBeforePreComp = []
-        
-        
+
         if currentMicrocycle == {} and race_number == 0:
             # Add a currentMicrocycle
             currentMicrocycleBeforePreComp = {
@@ -1326,7 +1400,7 @@ def planWeekLoads(
                 "startDate": datesInfo["currentDate"],
                 "endDate": datesInfo["currentDate"]+timedelta(days=6-datesInfo["currentDate"].weekday()),
                 "theoreticalWeeklyTSS": startLoad*((6-datesInfo["currentDate"].weekday())/7) if loadsInfo.get("nextRestingWeek", 4) >=1  else startLoad*((6-datesInfo["currentDate"].weekday())/7/2),
-                "theoreticalResting": loadsInfo.get("nextRestingWeek", 4) >=1,
+                "theoreticalResting": loadsInfo.get("nextRestingWeek", 4) <1,
                 "keyWorkouts": [],
                 "dayByDay": {},
             }
@@ -1408,31 +1482,39 @@ def planWeekLoads(
         + [precompetMacrocycle]
         + [competitionMacrocycle]
     )
-    log_info("Past microcycles")
-    log_info(pastMicrocycles)
-    log_info("Current microcycle")
-    log_info(currentMicrocycle)
-    log_info("New Plan Before Pre Comp")
-    log_info(newPlanBeforePreComp)
-    log_info("Precompet microcycle")
-    log_info(precompetMicrocycle)
-    log_info("Competition microcycle")
-    log_info(competitionMicrocycle)
+    log_info(f"pastMicrocycles: {pastMicrocycles}, currentMicrocycle: {currentMicrocycle}, newPlanBeforePreComp: {newPlanBeforePreComp}, precompetMicrocycle: {precompetMicrocycle}, competitionMicrocycle: {competitionMicrocycle}")
     for microcycle in newPlanBeforePreComp:
-        microcycle = planFutureWeekDayByDay(microcycle, weekInfo, raceInfo, loadsInfo, datesInfo)
-    precompetMicrocycle = planFutureWeekDayByDay(precompetMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
-    competitionMicrocycle = planFutureWeekDayByDay(competitionMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
-    totalMicrocycles = (
-        pastMicrocycles + [currentMicrocycle]
-        if currentMicrocycle != {}
-        else [] + newPlanBeforePreComp + [precompetMicrocycle] + [competitionMicrocycle]
-    )
+        if microcycle != {}:
+            microcycle = planFutureWeekDayByDay(microcycle, weekInfo, raceInfo, loadsInfo, datesInfo)
+    if precompetMicrocycle != {}:
+        precompetMicrocycle = planFutureWeekDayByDay(precompetMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
+    if competitionMicrocycle != {}:
+        competitionMicrocycle = planFutureWeekDayByDay(competitionMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo)
+    log_debug(f"competitionMicrocycle: {competitionMicrocycle}")
+    log_debug(f"pastMicrocycles: {pastMicrocycles}, currentMicrocycle: {currentMicrocycle}, newPlanBeforePreComp: {newPlanBeforePreComp}, precompetMicrocycle: {precompetMicrocycle}, competitionMicrocycle: {competitionMicrocycle}")
+    totalMicrocycles = pastMicrocycles
+
+    # Add currentMicrocycle if it's not empty
+    if currentMicrocycle != {}:
+        totalMicrocycles.append(currentMicrocycle)
+
+    # Add all non-empty items in the correct order
+    totalMicrocycles.extend(newPlanBeforePreComp)
+
+    if precompetMicrocycle != {}:
+        totalMicrocycles.append(precompetMicrocycle)
+
+    if competitionMicrocycle != {}:
+        totalMicrocycles.append(competitionMicrocycle)
+
+    
+    log_debug(f"Total microcycles: {totalMicrocycles}")
 
     return totalMacrocycles, totalMicrocycles
 
 
 def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, datesInfo):
-    log_debug(f"Planning future week day by day for {futureMicrocycle}")
+    log_info(f"Planning future week day by day for {futureMicrocycle}")
 
     remaining_tss = futureMicrocycle["theoreticalWeeklyTSS"]
     availableDays = weekInfo["availableDays"].copy()
@@ -1464,7 +1546,7 @@ def planFutureWeekDayByDay(futureMicrocycle, weekInfo, raceInfo, loadsInfo, date
     dayByDay = {}
     if "compet" == futureMicrocycle["cycleType"].lower():
         # Let's plan the competition
-        log_debug("Planning competition")
+        log_info("Planning competition")
         # Let's plan the competition
         competitionTSS = raceInfo["eventTSS"]
         targetTimeInSeconds = raceInfo["targetTimeInMinutes"] * 60
@@ -2683,18 +2765,23 @@ def getSpecificWeeks(
 
         return weeks
 
-
+# @st.cache_data
 def compute_training_plan(inputs):
     result = []
+    total_number_of_hours = 0
     for i in range(len(inputs["races"])):
         log_info(f"Computing training plan for {i} race")
         log_info(f"Inputs: {inputs}")
         if inputs["races"][i]["distance"] >= 0:
             new_weeks = compute_training_plan_1_race(inputs, i)
+            for week in new_weeks:
+                total_number_of_hours += week["theoreticalWeeklyTSS"]/60
             result = result + new_weeks
+    log_info(f"Total number of hours: {total_number_of_hours}")
+    st.session_state["total_number_of_hours"] = int(total_number_of_hours)
     return result
 
-
+# @st.cache_data
 def compute_training_plan_1_race(inputs, i):
     raceDistanceKm = inputs["races"][i]["distance"]
     targetTimeInMinutes = (
@@ -2733,9 +2820,12 @@ def compute_training_plan_1_race(inputs, i):
         else 0.1
     )
     cycleLength = 4 if inputs["recuperation_level"] == "Low" else 3
-    nextRestingWeek = inputs["next_resting_week"]
+    if i == 0:
+        nextRestingWeek = inputs["next_resting_week"]
+    else:
+        nextRestingWeek = 0
     declaredHandableLoad = inputs["weekly_hours"] * (
-        60
+        60 if "intensity_workouts" not in inputs else 60
         if inputs["intensity_workouts"] == 0
         else 65
         if inputs["intensity_workouts"] == 1
@@ -2808,14 +2898,16 @@ def compute_training_plan_1_race(inputs, i):
         # startDate is the next monday after the previous race, between 4 and 11 days after
         lastRaceDate = inputs["races"][i - 1]["date"]
 
-        startDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        # startDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        startDate = lastRaceDate + timedelta(days=(6 - lastRaceDate.weekday()))
         startDate = datetime(startDate.year, startDate.month, startDate.day)
-        currentDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        # currentDate = lastRaceDate + timedelta(days=(7 - lastRaceDate.weekday() if lastRaceDate.weekday() >= 4 else 0))
+        currentDate = lastRaceDate + timedelta(days=(6 - lastRaceDate.weekday()))
         # convert currentDate to datetime
         currentDate = datetime(currentDate.year, currentDate.month, currentDate.day)
     else:
-        startDate = datetime.now()
-        currentDate = datetime.now()
+        startDate = datetime.today()
+        currentDate = datetime.today()
         # currentDate = datetime(year=2024, month=12, day=19)
     
     
@@ -2865,6 +2957,160 @@ def compute_training_plan_1_race(inputs, i):
     )
     return totalMicrocycles
 
+def send_to_db(data_cycles, inputs, athlete_id, session_id, connection_parameters, result_queue):
+    """
+    Function to send data (training plan, inputs, races, and week organization) to the database in a separate thread.
+    """
+    try:
+        log_debug("Starting database sync in thread...")
+
+        # Create the Snowflake session
+        session = create_snowflake_session(connection_parameters)
+        # Handle microcycles and microcycle days
+        start_dates = [cycle["startDate"] for cycle in data_cycles]
+
+        if start_dates:
+            placeholders = ", ".join(["?"] * len(start_dates))
+            session.sql(
+                f"DELETE FROM microcycle_days WHERE strava_id = ? AND start_date IN ({placeholders})",
+                [athlete_id] + start_dates
+            ).collect()
+            session.sql(
+                f"DELETE FROM microcycles WHERE strava_id = ? AND start_date IN ({placeholders})",
+                [athlete_id] + start_dates
+            ).collect()
+
+        # Bulk insert microcycles
+        microcycle_values = []
+        microcycle_params = []
+        for cycle in data_cycles:
+            microcycle_values.append("(?, ?, ?, ?, ?, ?)")
+            microcycle_params.extend([
+                athlete_id, session_id, cycle["startDate"], cycle["endDate"],
+                cycle["cycleType"], cycle["theoreticalWeeklyTSS"]
+            ])
+
+        if microcycle_values:
+            mc_val_str = ", ".join(microcycle_values)
+            session.sql(f"""
+            INSERT INTO microcycles (strava_id, session_id, start_date, end_date, cycle_type, theoretical_weekly_tss)
+            VALUES {mc_val_str}
+            """, microcycle_params).collect()
+
+        # Bulk insert microcycle days
+        day_values = []
+        day_params = []
+        for cycle in data_cycles:
+            if "dayByDay" in cycle:
+                for day, day_activities in cycle["dayByDay"].items():
+                    for idx, activity in enumerate(day_activities):
+                        for zone, seconds in activity["secondsInZone"].items():
+                            day_values.append("(?, ?, ?, ?, ?, ?, ?)")
+                            day_params.extend([
+                                athlete_id, session_id, cycle["startDate"], day, idx + 1, zone, seconds
+                            ])
+
+        if day_values:
+            day_val_str = ", ".join(day_values)
+            session.sql(f"""
+            INSERT INTO microcycle_days (strava_id, session_id, start_date, day, workout_idx, zone, seconds)
+            VALUES {day_val_str}
+            """, day_params).collect()
+
+        # Flatten inputs for storage
+        flattened_inputs = {
+            "athlete_id": athlete_id,
+            "session_id": session_id,
+            "level": inputs["level"],
+            "recuperation_level": inputs["recuperation_level"],
+            "weekly_hours": inputs["weekly_hours"],
+            "intensity_workouts": inputs["intensity_workouts"],
+            "longest_workout_hours": inputs["longest_workout_hours"],
+            "longest_workout_minutes": inputs["longest_workout_minutes"],
+            "next_resting_week": inputs["next_resting_week"],
+            "increase": inputs["increase"],
+        }
+
+        # Merge inputs into the `inputs` table
+        session.sql(f"""
+        MERGE INTO inputs AS target
+        USING (SELECT ? AS athlete_id, ? AS session_id, ? AS level, ? AS recuperation_level, ? AS weekly_hours, 
+                      ? AS intensity_workouts, ? AS longest_workout_hours, ? AS longest_workout_minutes, 
+                      ? AS next_resting_week, ? AS increase) AS source
+        ON target.athlete_id = source.athlete_id AND target.session_id = source.session_id
+        WHEN MATCHED THEN UPDATE SET
+            level = source.level,
+            recuperation_level = source.recuperation_level,
+            weekly_hours = source.weekly_hours,
+            intensity_workouts = source.intensity_workouts,
+            longest_workout_hours = source.longest_workout_hours,
+            longest_workout_minutes = source.longest_workout_minutes,
+            next_resting_week = source.next_resting_week,
+            increase = source.increase
+        WHEN NOT MATCHED THEN INSERT (athlete_id, session_id, level, recuperation_level, weekly_hours, intensity_workouts, 
+                                      longest_workout_hours, longest_workout_minutes, next_resting_week, increase)
+        VALUES (source.athlete_id, source.session_id, source.level, source.recuperation_level, source.weekly_hours, 
+                source.intensity_workouts, source.longest_workout_hours, source.longest_workout_minutes, 
+                source.next_resting_week, source.increase)
+        """, list(flattened_inputs.values())).collect()
+
+        # Merge races
+        for race in inputs["races"]:
+            session.sql(f"""
+            MERGE INTO races AS target
+            USING (
+                SELECT ? AS athlete_id, ? AS session_id, ? AS date, ? AS objective, ? AS weekly_start_hours,
+                       ? AS sport, ? AS target_hours, ? AS weekly_end_hours, ? AS distance, ? AS target_minutes, 
+                       ? AS other_sports
+            ) AS source
+            ON target.athlete_id = source.athlete_id AND target.session_id = source.session_id AND target.date = source.date
+            WHEN MATCHED THEN UPDATE SET
+                objective = source.objective,
+                weekly_start_hours = source.weekly_start_hours,
+                sport = source.sport,
+                target_hours = source.target_hours,
+                weekly_end_hours = source.weekly_end_hours,
+                distance = source.distance,
+                target_minutes = source.target_minutes,
+                other_sports = source.other_sports
+            WHEN NOT MATCHED THEN INSERT (athlete_id, session_id, date, objective, weekly_start_hours, sport, 
+                                          target_hours, weekly_end_hours, distance, target_minutes, other_sports)
+            VALUES (source.athlete_id, source.session_id, source.date, source.objective, source.weekly_start_hours, 
+                    source.sport, source.target_hours, source.weekly_end_hours, source.distance, source.target_minutes, 
+                    source.other_sports)
+            """, [
+                athlete_id, session_id, race["date"], race["objective"],
+                race["weekly_start_hours"], race["sport"], race["target_hours"],
+                race["weekly_end_hours"], race["distance"], race["target_minutes"],
+                json.dumps(race["other_sports"])
+            ]).collect()
+
+        # Merge week organization
+        week_org = inputs["week_organization"]
+        session.sql(f"""
+        MERGE INTO week_organization AS target
+        USING (
+            SELECT ? AS athlete_id, ? AS session_id, ? AS long_workout_day, ? AS workout_days, ? AS workout_durations
+        ) AS source
+        ON target.athlete_id = source.athlete_id AND target.session_id = source.session_id
+        WHEN MATCHED THEN UPDATE SET
+            long_workout_day = source.long_workout_day,
+            workout_days = source.workout_days,
+            workout_durations = source.workout_durations
+        WHEN NOT MATCHED THEN INSERT (athlete_id, session_id, long_workout_day, workout_days, workout_durations)
+        VALUES (source.athlete_id, source.session_id, source.long_workout_day, source.workout_days, source.workout_durations)
+        """, [
+            athlete_id, session_id, week_org["long_workout_day"],
+            json.dumps(week_org["workout_days"]), json.dumps(week_org["workout_durations"])
+        ]).collect()
+
+        # Notify success
+        result_queue.put("completed")
+        log_debug("Database sync completed successfully.")
+    except Exception as e:
+        result_queue.put(f"error: {str(e)}")
+        log_error(f"Error during database sync: {e}")
+
 # Function to add a new race
 def add_race():
     if len(st.session_state["inputs"]["races"]) >= 3:
@@ -2890,6 +3136,12 @@ def remove_race(index):
     update_training_preferences()
     
 
+if "inputs_changed" not in st.session_state:
+    st.session_state["inputs_changed"] = True  # Assume inputs changed initially
+
+if "plan" not in st.session_state:
+    st.session_state["plan"] = None  # Placeholder for the computed training plan
+
 # Initialize session state for all inputs if not already set
 if "inputs" not in st.session_state:
     st.session_state["long_workout_day"] = "Saturday"
@@ -2901,7 +3153,7 @@ if "inputs" not in st.session_state:
     }
     st.session_state["inputs"] = {
         "level": "Confirmed",
-        "recuperation_level": "High",
+        "recuperation_level": "Low",
         "weekly_hours": 3,
         "intensity_workouts": 1,
         "longest_workout_hours": 1,
@@ -2968,7 +3220,7 @@ def update_training_preferences():
         "level": st.session_state["input_level"],
         "recuperation_level": st.session_state["input_recuperation_level"],
         "weekly_hours": st.session_state["input_weekly_hours"],
-        "intensity_workouts": st.session_state["input_intensity_workouts"],
+        # "intensity_workouts": st.session_state["input_intensity_workouts"],
         "longest_workout_hours": st.session_state["input_longest_workout_hours"],
         "longest_workout_minutes": st.session_state["input_longest_workout_minutes"],
         "next_resting_week": st.session_state["input_next_resting_week"],
@@ -2978,10 +3230,29 @@ def update_training_preferences():
     }
     result["races"] = update_race_data()
     result["week_organization"] = update_week_organization()
+    log_debug(f"Updating training preferences: {result}")
+    log_debug(f"Session state inputs: {st.session_state['inputs']}")
     st.session_state["inputs"].update(result)
+    log_info(f"Updated training preferences: {result}")
+    st.session_state["inputs_changed"] = True  # Mark inputs as changed
 
-    # Trigger recompute
-    st.session_state["mock_data"] = compute_training_plan(st.session_state["inputs"])
+
+if st.session_state["inputs_changed"]:
+    st.session_state["plan"] = compute_training_plan(st.session_state["inputs"])
+    st.session_state["inputs_changed"] = False  # Reset the flag
+    # # Trigger recompute
+    # st.session_state["mock_data"] = compute_training_plan(st.session_state["inputs"])
+    # Launch the background sync thread
+    data_cycles = st.session_state["plan"]
+    athlete_id = st.session_state.get("athlete_id", "0")
+    # session_id = st.session_state.get("cookies", {}).get("session_id", "")
+
+    threading.Thread(
+        target=send_to_db,
+        args=(data_cycles, st.session_state["inputs"], athlete_id, session_id, connection_parameters, st.session_state["result_queue"]),
+        daemon=True,
+    ).start()
+    st.session_state["db_sync_status"] = "in_progress"
 
 
 def update_race_data():
@@ -3004,6 +3275,8 @@ def update_race_data():
             },
         }
         races.append(race_data)
+    # order races by date
+    races = sorted(races, key=lambda x: x["date"])
 
     return races
 
@@ -3028,21 +3301,177 @@ def validate_total_share(shares):
             f"Total share for other sports cannot exceed 50%. Currently: {total_share}%"
         )
 
+# @st.cache_data
 def fetch_activities(after_ts):
     activities = []
     page = 1
     while True:
-        url = f"https://www.strava.com/api/v3/athlete/activities?after={after_ts}&page={page}&per_page=30"
+        log_info(f"Fetching activities from page {page}...")
+        url = f"https://www.strava.com/api/v3/athlete/activities?after={after_ts}&page={page}&per_page=100"
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
             st.error("Failed to fetch activities.")
             break
         batch = response.json()
+        log_info(f"Fetched {len(batch)} activities from page {page}")
         if not batch:
             break
         activities.extend(batch)
         page += 1
     return activities
+
+def calculate_training_hours(activities):
+    """
+    Calculate total training hours from the activities fetched.
+    """
+    total_seconds = sum(activity.get("moving_time", 0) for activity in activities)
+    return total_seconds / 3600  # Convert seconds to hours
+
+def recommend_level(training_hours):
+    """
+    Recommend a training level based on total hours in the past year.
+    """
+    if training_hours > 300:
+        return "Confirmed"
+    elif training_hours > 200:
+        return "Intermediate"
+    else:
+        return "Beginner"
+
+def recommend_weekly_hours(activities):
+    """
+    Recommend the current weekly training hours based on the past 4 weeks
+    """
+    last_4_weeks_activities = []
+    for activity in activities:
+        activity_date = datetime.strptime(activity["start_date"], "%Y-%m-%dT%H:%M:%SZ")
+        if activity_date >= datetime.utcnow() - timedelta(weeks=4):
+            last_4_weeks_activities.append(activity)
+    total_seconds = sum(activity.get("moving_time", 0) for activity in last_4_weeks_activities)
+    total_hours = total_seconds / 3600
+    return int(total_hours / 4)
+
+
+def recommend_intensity_workouts(activities):
+    """
+    Recommend the number of intensity workouts based on the past 4 weeks
+    """
+    last_4_weeks_activities = []
+    for activity in activities:
+        activity_date = datetime.strptime(activity["start_date"], "%Y-%m-%dT%H:%M:%SZ")
+        if activity_date >= datetime.utcnow() - timedelta(weeks=4):
+            last_4_weeks_activities.append(activity)
+    intensity_workouts = 0
+    for activity in last_4_weeks_activities:
+        if activity.get("workout_type") == 3:
+            intensity_workouts += 1
+    return intensity_workouts
+
+def recommend_longest_workout(activities):
+    """
+    Recommend the longest workout duration based on the last 4 weeks
+    """
+    longest_workout_minutes = 0
+    for activity in activities:
+        activity_date = datetime.strptime(activity["start_date"], "%Y-%m-%dT%H:%M:%SZ")
+        if activity_date >= datetime.utcnow() - timedelta(days=28):
+            duration = activity.get("moving_time", 0) / 60  # Convert seconds to minutes
+            log_info(f"Duration: {duration} of activity: {activity['name']} from date {activity['start_date']}")
+            if duration > longest_workout_minutes:
+                log_info(f"New longest workout: {duration} minutes for activity: {activity['name']}")
+                longest_workout_minutes = duration
+    return int(longest_workout_minutes // 60), int(longest_workout_minutes % 60)
+
+def recommend_next_resting_week(activities):
+    """
+    Recommend the next resting week based on the last 4 weeks, the last resting week was the one with the lowest moving time
+    the next should be cycleLength weeks after the last resting week
+    """
+    activities_by_week = defaultdict(int)
+    for activity in activities:
+        if datetime.strptime(activity["start_date"], "%Y-%m-%dT%H:%M:%SZ") >= datetime.utcnow() - timedelta(weeks=4):
+            activity_week = datetime.strptime(activity["start_date"], "%Y-%m-%dT%H:%M:%SZ").isocalendar()[1]
+            activities_by_week[activity_week] += activity.get("moving_time", 0)
+    if not activities_by_week:
+        return 0
+    min_moving_time = min(activities_by_week.values())
+    resting_week = [week for week, moving_time in activities_by_week.items() if moving_time == min_moving_time][0]
+    next_resting_week = resting_week + 4
+    #compared to current week
+    current_week = datetime.utcnow().isocalendar()[1]
+    return next_resting_week - current_week
+
+
+# Initialize state variables
+if "fetching_complete" not in st.session_state:
+    st.session_state["fetching_complete"] = False
+
+if "training_hours" not in st.session_state:
+    st.session_state["training_hours"] = None
+
+if "level_recommendation" not in st.session_state:
+    st.session_state["level_recommendation"] = None
+
+def fetch_and_recommend(connection_parameters):
+    """
+    Fetch activities from Strava for the past year and calculate a level recommendation.
+    """
+    try:
+        log_info("Fetching activities for level recommendation...")
+        last_year = int((datetime.utcnow() - timedelta(days=365)).timestamp())
+        activities = fetch_activities(last_year)
+        log_info(f"Fetched {len(activities)} activities.")
+        if activities:
+            # Build a single MERGE statement with multiple values
+            values_clause = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(activities))
+            
+            params = []
+            for activity in activities:
+                params.extend([
+                    activity["id"],
+                    st.session_state["athlete_id"],
+                    session_id,
+                    activity["name"],
+                    activity["start_date"],
+                    activity["distance"],
+                    activity["moving_time"],
+                    activity["elapsed_time"],
+                    activity["total_elevation_gain"],
+                    activity["type"]
+                ])
+
+            query = f"""
+            MERGE INTO activities a
+            USING (
+                SELECT * FROM VALUES {values_clause}
+                AS vals(id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+            ) vals
+            ON a.id = vals.id
+            WHEN NOT MATCHED THEN
+                INSERT (id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+                VALUES (vals.id, vals.athlete_id, vals.session_id, vals.name, vals.start_date, vals.distance, vals.moving_time, vals.elapsed_time, vals.total_elevation_gain, vals.type)
+            """
+            session = create_snowflake_session(connection_parameters)
+            session.sql(query, params).collect()
+            log_debug(f"Inserted {len(activities)} activities into Snowflake.")
+
+            st.success(f"Downloaded and stored {len(activities)} activities from the last two months.")
+        training_hours = calculate_training_hours(activities)
+        st.session_state["training_hours"] = training_hours
+        st.session_state["level_recommendation"] = recommend_level(training_hours)
+        st.session_state["current_weekly_hours_recommendation"] = recommend_weekly_hours(activities)
+        st.session_state["current_intensity_workouts_recommendation"] = recommend_intensity_workouts(activities)
+        st.session_state["current_longest_workout_hours_recommendation"], st.session_state["current_longest_workout_minutes_recommendation"] = recommend_longest_workout(activities)
+        st.session_state["current_next_resting_week_recommendation"] = recommend_next_resting_week(activities)
+        
+        st.session_state["fetching_complete"] = True  # Mark as complete
+        log_info(f"Level recommendation calculated successfully, training hours: {training_hours}, recommendation: {st.session_state['level_recommendation']}, current weekly hours: {st.session_state['current_weekly_hours_recommendation']}, current intensity workouts: {st.session_state['current_intensity_workouts_recommendation']}, current longest workout: {st.session_state['current_longest_workout_hours_recommendation']}:{st.session_state['current_longest_workout_minutes_recommendation']}, current next resting week: {st.session_state['current_next_resting_week_recommendation']}")
+        st.rerun()
+    except Exception as e:
+        st.session_state["fetching_complete"] = True  # Avoid indefinite waiting
+        log_error(f"Error during level recommendation: {e}")
+
+
 
 def add_columns_if_not_exists(table_name, columns, session):
     """
@@ -3062,9 +3491,66 @@ def add_columns_if_not_exists(table_name, columns, session):
         if column_name.lower() not in existing_column_names:
             # Add the column if not exists
             session.sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}").collect()
-            print(f"Added column {column_name} to {table_name}.")
+            log_debug(f"Added column {column_name} to {table_name}.")
         else:
-            print(f"Column {column_name} already exists in {table_name}.")
+            log_debug(f"Column {column_name} already exists in {table_name}.")
+
+
+# 4. Fetch the Last Activity
+# @st.cache_data
+def get_last_activity(access_token):
+    url = f"{STRAVA_API_URL}/athlete/activities"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"per_page": 100, "page": 1}
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        activities = response.json()
+        if activities:
+            return activities[0]
+        else:
+            log_debug("No activities found.")
+    else:
+        log_debug(f"Error fetching last activity: {response.status_code}, {response.text}")
+    return None
+
+# 2. Upload Image to Imgur CDN
+def upload_image_to_imgur(image_path):
+    headers = {"Authorization": f"Client-ID {imgur_client_id}"}
+    with open(image_path, "rb") as img_file:
+        response = requests.post(
+            "https://api.imgur.com/3/image", headers=headers, files={"image": img_file}
+        )
+    if response.status_code == 200:
+        log_debug(f"Image uploaded to Imgur, link: {response.json()['data']['link']}")
+        return response.json()["data"]["link"]  # Get the public URL of the uploaded image
+    else:
+        log_debug(f"Error uploading image to Imgur: {response.status_code}, {response.text}")
+        return None
+    
+# 3. Update Strava Activity Description
+def update_activity_description(activity_id, description, access_token):
+    url = f"{STRAVA_API_URL}/activities/{activity_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    data = {"description": description}
+    response = requests.put(url, headers=headers, json=data)
+    if response.status_code == 200:
+        log_debug(f"Description updated successfully, with response: {response.json()}")
+    else:
+        log_debug(f"Error updating description: {response.status_code}, {response.text}")
+
+def to_unicode_bold_sans(text):
+    """Convert text to Unicode Mathematical Sans-Serif Bold."""
+    bold_text = ""
+    for char in text:
+        if 'a' <= char <= 'z':
+            bold_text += chr(ord(char) + 0x1D5EE - ord('a'))
+        elif 'A' <= char <= 'Z':
+            bold_text += chr(ord(char) + 0x1D5D4 - ord('A'))
+        elif '0' <= char <= '9':
+            bold_text += chr(ord(char) + 0x1D7EC - ord('0'))
+        else:
+            bold_text += char
+    return bold_text
 
 # Check if we have an access token in session_state
 if "access_token" not in st.session_state:
@@ -3073,7 +3559,55 @@ if "access_token" not in st.session_state:
 # Parse query parameters
 params = st.query_params
 
-# session = Session.builder.configs(connection_parameters).create()
+session = create_snowflake_session(connection_parameters)
+
+# # Updated `inputs` table schema
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS inputs (
+#     athlete_id INTEGER,
+#     session_id VARCHAR,
+#     level VARCHAR,
+#     recuperation_level VARCHAR,
+#     weekly_hours FLOAT,
+#     intensity_workouts INTEGER,
+#     longest_workout_hours INTEGER,
+#     longest_workout_minutes INTEGER,
+#     next_resting_week INTEGER,
+#     increase VARCHAR,
+#     PRIMARY KEY (athlete_id, session_id)
+# )
+# """).collect()
+
+# # Races table schema
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS races (
+#     athlete_id INTEGER,
+#     session_id VARCHAR,
+#     date DATE,
+#     objective VARCHAR,
+#     weekly_start_hours FLOAT,
+#     sport VARCHAR,
+#     target_hours FLOAT,
+#     weekly_end_hours FLOAT,
+#     distance FLOAT,
+#     target_minutes FLOAT,
+#     other_sports VARCHAR, -- Changed from JSON to VARCHAR
+#     PRIMARY KEY (athlete_id, session_id, date)
+# )
+# """).collect()
+
+# # Week organization table schema
+# session.sql("""
+# CREATE TABLE IF NOT EXISTS week_organization (
+#     athlete_id INTEGER,
+#     session_id VARCHAR,
+#     long_workout_day VARCHAR,
+#     workout_days VARCHAR, -- Changed from JSON to VARCHAR
+#     workout_durations VARCHAR, -- Changed from JSON to VARCHAR
+#     PRIMARY KEY (athlete_id, session_id)
+# )
+# """).collect()
+
 
 # # Create or alter `activities` table
 # session.sql("""
@@ -3173,6 +3707,7 @@ if "code" in params and st.session_state["access_token"] is None:
         "grant_type": "authorization_code",
     }
     response = requests.post(token_url, data=data)
+    log_info(f"Exchanging code for token: {response.json()}")
 
     if response.status_code == 200:
         token_data = response.json()
@@ -3185,10 +3720,13 @@ if "code" in params and st.session_state["access_token"] is None:
         st.stop()
 
 
-else:
+if st.session_state["access_token"] is not None:
+    log_info("No code found in query parameters.")
+    log_info(f"Cookies ready: {cookies.ready()}, session_id in cookies: {'session_id' in cookies}, access token set: {st.session_state['access_token'] is not None}")
     if cookies.ready() and "session_id" in cookies and st.session_state["access_token"] is not None:
+        log_info("Session ID found in cookies and access token is set.")
         # We have a token. We can call Strava's API.
-        st.write("You are logged in!")
+        # st.write("You are logged in!")
 
         # Fetch activities from Strava
         access_token = st.session_state["access_token"]
@@ -3197,44 +3735,56 @@ else:
         two_months_ago = now - timedelta(days=60)
         after_timestamp = int(two_months_ago.timestamp())
         
+        # Launch the background fetch for activities if not already done
+        log_info("Checking if background fetch is needed...")
+        log_info(f"fetched_activities: {st.session_state.get('fetched_activities')}, access_token: {st.session_state.get('access_token', False)}, fetching_complete: {st.session_state.get('fetching_complete')}, fetched activity is present: {'fetched_activities' in st.session_state}, fetching activities: {'fetching_activities' in st.session_state}, fetching complete in session state: {'fetching_complete' in st.session_state}")
+        if ("fetching_activities" not in st.session_state or not st.session_state["fetching_activities"]) and "access_token" in st.session_state and st.session_state["access_token"] and not st.session_state["fetching_complete"]:
+            log_info("Starting background fetch for activities...")
+            st.session_state["fetching_activities"] = True
+            ctx = get_script_run_ctx()
+            thread = threading.Thread(target=fetch_and_recommend, args=(connection_parameters,), daemon=True)
+            log_info(f"Thread started: {thread}")
+            add_script_run_ctx(thread,ctx)
+            thread.start()
 
 
-        activities = fetch_activities(after_timestamp)
+        # activities = fetch_activities(after_timestamp)
 
-        if activities:
-            # Build a single MERGE statement with multiple values
-            values_clause = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(activities))
+        # if activities:
+        #     # Build a single MERGE statement with multiple values
+        #     values_clause = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(activities))
             
-            params = []
-            for activity in activities:
-                params.extend([
-                    activity["id"],
-                    st.session_state["athlete_id"],
-                    cookies["session_id"],
-                    activity["name"],
-                    activity["start_date"],
-                    activity["distance"],
-                    activity["moving_time"],
-                    activity["elapsed_time"],
-                    activity["total_elevation_gain"],
-                    activity["type"]
-                ])
+        #     params = []
+        #     for activity in activities:
+        #         params.extend([
+        #             activity["id"],
+        #             st.session_state["athlete_id"],
+        #             session_id,
+        #             activity["name"],
+        #             activity["start_date"],
+        #             activity["distance"],
+        #             activity["moving_time"],
+        #             activity["elapsed_time"],
+        #             activity["total_elevation_gain"],
+        #             activity["type"]
+        #         ])
 
-            query = f"""
-            MERGE INTO activities a
-            USING (
-                SELECT * FROM VALUES {values_clause} 
-                AS vals(id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
-            ) vals
-            ON a.id = vals.id
-            WHEN NOT MATCHED THEN
-                INSERT (id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
-                VALUES (vals.id, vals.name, vals.start_date, vals.distance, vals.moving_time, vals.elapsed_time, vals.total_elevation_gain, vals.type)
-            """
-            session = Session.builder.configs(connection_parameters).create()
-            session.sql(query, params).collect()
+        #     query = f"""
+        #     MERGE INTO activities a
+        #     USING (
+        #         SELECT * FROM VALUES {values_clause}
+        #         AS vals(id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+        #     ) vals
+        #     ON a.id = vals.id
+        #     WHEN NOT MATCHED THEN
+        #         INSERT (id, athlete_id, session_id, name, start_date, distance, moving_time, elapsed_time, total_elevation_gain, type)
+        #         VALUES (vals.id, vals.athlete_id, vals.session_id, vals.name, vals.start_date, vals.distance, vals.moving_time, vals.elapsed_time, vals.total_elevation_gain, vals.type)
+        #     """
+        #     session = create_snowflake_session(connection_parameters)
+        #     session.sql(query, params).collect()
+        #     log_debug(f"Inserted {len(activities)} activities into Snowflake.")
 
-            st.success(f"Downloaded and stored {len(activities)} activities from the last two months.")
+            # st.success(f"Downloaded and stored {len(activities)} activities from the last two months.")
 
 # First Row: My Level Fields
 st.header("Training Level and Preferences")
@@ -3257,7 +3807,7 @@ with st.container():
                 f"&scope={scopes}"
             )
             st.markdown(f"[Click here to login with Strava to help us assess your level]({authorize_url})", unsafe_allow_html=True) 
-    col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
     with col1:
         level = st.selectbox(
@@ -3269,17 +3819,26 @@ with st.container():
             key="input_level",
             on_change=update_training_preferences,
         )
-    with col2:
-        recuperation_level = st.selectbox(
-            "Recuperation Needs",
-            ["Low", "High"],
-            ["Low", "High"].index(st.session_state["inputs"]["recuperation_level"]),
-            key="input_recuperation_level",
-            on_change=update_training_preferences,
-        )
-        cycle_length = 3 if recuperation_level == "Low" else 4
+        # Show recommendation if fetching is complete
+        if st.session_state["access_token"] is None:
+            st.warning("Login with Strava to get recommendation.")
+        else:
+            if st.session_state["fetching_complete"]:
+                if st.session_state["training_hours"] is not None:
+                    st.write(
+                        f"**Recommended Level:** {st.session_state['level_recommendation']} "
+                        f"(Based on {st.session_state['training_hours']:.0f} hours in the past year)"
+                    )
+                    # if st.button("Update to Recommended Level", key="update_level"):
+                    #     st.session_state["input_level"] = st.session_state["level_recommendation"]
+                    #     update_training_preferences()
+                else:
+                    st.error("Failed to fetch activities or calculate training hours.")
+            else:
+                st.write("Fetching activities... Please wait.")
+    
 
-    with col3:
+    with col2:
         weekly_hours = st.slider(
             "Current Weekly Hours*",
             1,
@@ -3288,16 +3847,32 @@ with st.container():
             key="input_weekly_hours",
             on_change=update_training_preferences,
         )
-    with col4:
-        intensity_workouts = st.selectbox(
-            "Intensity Workouts*",
-            list(range(0, 6)),
-            st.session_state["inputs"]["intensity_workouts"],
-            key="input_intensity_workouts",
-            on_change=update_training_preferences,
-        )
+        # Show recommendation if fetching is complete
+        if st.session_state["access_token"] is None:
+            st.warning("Login with Strava to get recommendation.")
+        else:
+            if st.session_state["fetching_complete"]:
+                if st.session_state["current_weekly_hours_recommendation"] is not None:
+                    st.write(
+                        f"**Recommended Weekly Hours:** {st.session_state['current_weekly_hours_recommendation']} "
+                    )
+                    # if st.button("Update to Recommended weekly hours", key="update_weekly_hours"):
+                    #     st.session_state["input_weekly_hours"] = st.session_state["current_weekly_hours_recommendation"]
+                    #     update_training_preferences()
+                else:
+                    st.error("Failed to fetch activities or calculate training hours.")
+            else:
+                st.write("Fetching activities... Please wait.")
+    # with col4:
+    #     intensity_workouts = st.selectbox(
+    #         "Intensity Workouts*",
+    #         list(range(0, 6)),
+    #         st.session_state["inputs"]["intensity_workouts"],
+    #         key="input_intensity_workouts",
+    #         on_change=update_training_preferences,
+    #     )
 
-    with col5:
+    with col3:
         longest_workout_hours = st.number_input(
             "Longest Workout (hours)*",
             value=st.session_state["inputs"]["longest_workout_hours"],
@@ -3305,7 +3880,24 @@ with st.container():
             key="input_longest_workout_hours",
             on_change=update_training_preferences,
         )
-    with col6:
+        # Show recommendation if fetching is complete
+        if st.session_state["access_token"] is None:
+            st.warning("Login with Strava to get recommendation.")
+        else:
+            if st.session_state["fetching_complete"]:
+                if st.session_state["current_longest_workout_hours_recommendation"] is not None:
+                    st.write(
+                        f"**Recommended Biggest workout:** {st.session_state['current_longest_workout_hours_recommendation']}:{st.session_state['current_longest_workout_minutes_recommendation']} "
+                    )
+                    # if st.button("Update to Recommended biggest workout"):
+                    #     st.session_state["input_longest_workout_hours"] = st.session_state["current_longest_workout_hours_recommendation"]
+                    #     st.session_state["input_longest_workout_minutes"] = st.session_state["current_longest_workout_minutes_recommendation"]
+                    #     update_training_preferences()
+                else:
+                    st.error("Failed to fetch activities or calculate training hours.")
+            else:
+                st.write("Fetching activities... Please wait.")
+    with col4:
         longest_workout_minutes = st.number_input(
             "Longest Workout (minutes)*",
             value=st.session_state["inputs"]["longest_workout_minutes"],
@@ -3314,7 +3906,7 @@ with st.container():
             on_change=update_training_preferences,
         )
 
-    with col7:
+    with col5:
         next_resting_week = st.number_input(
             "Next Resting Week",
             value=st.session_state["inputs"]["next_resting_week"],
@@ -3322,10 +3914,34 @@ with st.container():
             key="input_next_resting_week",
             on_change=update_training_preferences,
         )
+        # Show recommendation if fetching is complete
+        if st.session_state["access_token"] is None:
+            st.warning("Login with Strava to get recommendation.")
+        else:
+            if st.session_state["fetching_complete"]:
+                if st.session_state["current_next_resting_week_recommendation"] is not None:
+                    st.write(
+                        f"**Recommended next resting week:** {st.session_state['current_next_resting_week_recommendation']} "
+                    )
+                    # if st.button("Update to Recommended next resting week"):
+                    #     st.session_state["input_next_resting_week"] = st.session_state["current_next_resting_week_recommendation"]
+                    #     update_training_preferences()
+                else:
+                    st.error("Failed to fetch activities or calculate training hours.")
+            else:
+                st.write("Fetching activities... Please wait.")
     # with col8:
     #     volume = st.selectbox("Volume", ["Low", "Medium", "High"], ["Low", "Medium", "High"].index(st.session_state["inputs"]["volume"]), key="input_volume",on_change=update_training_preferences)
-
-    with col8:
+    with col6:
+        recuperation_level = st.selectbox(
+            "Recuperation Needs",
+            ["Low", "High"],
+            ["Low", "High"].index(st.session_state["inputs"]["recuperation_level"]),
+            key="input_recuperation_level",
+            on_change=update_training_preferences,
+        )
+        cycle_length = 3 if recuperation_level == "Low" else 4
+    with col7:
         increase = st.selectbox(
             "Increase Rate",
             ["Low", "Medium", "High"],
@@ -3348,8 +3964,11 @@ columns = st.columns(min(len(st.session_state["inputs"]["races"]), 3))  # Limit 
 
 for i, race in enumerate(st.session_state["inputs"]["races"]):
     with columns[i]:
-        st.subheader(f"Race {i + 1}") 
-        st.button(f"Remove Race {i + 1}", on_click=remove_race, args=(i,))
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader(f"Race {i + 1}") 
+        with col2:
+            st.button(f"Remove Race {i + 1}", on_click=remove_race, args=(i,))
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -3432,13 +4051,10 @@ for i, race in enumerate(st.session_state["inputs"]["races"]):
                 )
             validate_total_share(other_sport_shares)
 
-# Full Row: Training Load Visualization
-st.header("Training Load and Week Organization")
-
 # Mock data for visualization
 # data_cycles = compute_training_plan(st.session_state["inputs"])
-if "mock_data" in st.session_state:
-    data_cycles = st.session_state["mock_data"]
+if "plan" in st.session_state and st.session_state["plan"] is not None:
+    data_cycles = st.session_state["plan"]
 else:
     data_cycles = compute_training_plan(st.session_state["inputs"])
 df_cycles = pd.DataFrame(data_cycles)
@@ -3448,6 +4064,24 @@ if "timeInZoneRepartition" in df_cycles.columns:
     )
 df_cycles["startDate"] = pd.to_datetime(df_cycles["startDate"])
 df_cycles["endDate"] = pd.to_datetime(df_cycles["endDate"])
+
+if "total_number_of_hours" in st.session_state and "training_hours" in st.session_state and st.session_state["training_hours"] is not None and st.session_state["total_number_of_hours"] is not None:
+    st.write(
+        f"**Total number of hours in your training plan:** {int(st.session_state['total_number_of_hours'])} meaning around {st.session_state['total_number_of_hours']/len(data_cycles):.1f} hours per week.\n**Last year** you trained {int(st.session_state['training_hours'])} hours, meaning {st.session_state['training_hours']/52:.1f} hours per week."
+    )
+    increase = ((st.session_state["total_number_of_hours"] / len(data_cycles)) - (st.session_state["training_hours"] / 52))/(st.session_state["training_hours"] / 52)
+    if increase > 0.1:
+        st.warning(f"**It means an increase of {increase:.1%} compared to last year and it could be too much.**")
+    elif increase > 0:
+        st.info(f"**It means an increase of {increase:.1%} compared to last year.**")
+    else:
+        st.success(f"**It means a decrease of {-increase:.1%} compared to last year.**")
+    
+
+# Full Row: Training Load Visualization
+st.header("Training Load and Week Organization")
+
+
 
 # Define all days of the week
 WEEK_DAYS = [
@@ -3523,61 +4157,23 @@ activity_df["Day"] = pd.Categorical(
 # Log final DataFrame
 log_debug(f"Final activity_df: {activity_df.to_string()}")
 
-if cookies.ready():
-    start_dates = [cycle["startDate"] for cycle in data_cycles]
-    athlete_id = st.session_state.get("athlete_id", "0")
+# Periodically check the result of the background task
+if st.session_state["db_sync_status"] == "in_progress":
+    if not st.session_state["result_queue"].empty():
+        result = st.session_state["result_queue"].get()
+        if result == "completed":
+            st.session_state["db_sync_status"] = "completed"
+        elif result.startswith("error"):
+            st.session_state["db_sync_status"] = "error"
+            st.error(f"An error occurred during sync: {result.split(':', 1)[1]}")
 
-    if start_dates:
-        # Bulk delete existing microcycle_days and microcycles
-        placeholders = ", ".join(["?"] * len(start_dates))
-        session = Session.builder.configs(connection_parameters).create()
-        # Delete from microcycle_days
-        session.sql(
-            f"DELETE FROM microcycle_days WHERE strava_id = ? AND start_date IN ({placeholders})",
-            [athlete_id] + start_dates
-        ).collect()
-        
-        # Delete from microcycles
-        session.sql(
-            f"DELETE FROM microcycles WHERE strava_id = ? AND start_date IN ({placeholders})",
-            [athlete_id] + start_dates
-        ).collect()
-
-    # Bulk insert microcycles
-    microcycle_values = []
-    microcycle_params = []
-    for cycle in data_cycles:
-        microcycle_values.append("(?, ?, ?, ?, ?, ?)")
-        microcycle_params.extend([athlete_id, cookies["session_id"], cycle["startDate"], cycle["endDate"], cycle["cycleType"], cycle["theoreticalWeeklyTSS"]])
-
-    if microcycle_values:
-        mc_val_str = ", ".join(microcycle_values)
-        session.sql(f"""
-        INSERT INTO microcycles (strava_id, session_id, start_date, end_date, cycle_type, theoretical_weekly_tss)
-        VALUES {mc_val_str}
-        """, microcycle_params).collect()
-
-    # Bulk insert microcycle_days
-    day_values = []
-    day_params = []
-    for cycle in data_cycles:
-        if "dayByDay" in cycle:
-            for day, day_activities in cycle["dayByDay"].items():
-                for idx, activity in enumerate(day_activities):
-                    for zone, seconds in activity["secondsInZone"].items():
-                        day_values.append("(?, ?, ?, ?, ?, ?, ?)")
-                        day_params.extend([athlete_id, cookies["session_id"], cycle["startDate"], day, idx + 1, zone, seconds])
-
-    if day_values:
-        day_val_str = ", ".join(day_values)
-        session.sql(f"""
-        INSERT INTO microcycle_days (strava_id, session_id, start_date, day, workout_idx, zone, seconds)
-        VALUES {day_val_str}
-        """, day_params).collect()
-
-    # st.success("Microcycles have been successfully stored or updated in the database!")
-
-
+# # Display sync status in the UI
+# if st.session_state["db_sync_status"] == "in_progress":
+#     st.info("Syncing data in the background...")
+# elif st.session_state["db_sync_status"] == "completed":
+#     st.success("Data sync completed!")
+# elif st.session_state["db_sync_status"] == "error":
+#     st.error("An error occurred during the sync.")
 
 # Combine Long Workout TSS and Weekly TSS in the graph
 graph_row = st.container()
@@ -3651,9 +4247,106 @@ with graph_row:
         on_select="rerun",
         use_container_width=True
     )
+    
+    log_debug(f"Event: {event}")
+    
+    
+    
+    # Step 4: Main Execution - Update Last Strava Activity with the Image
+    if "access_token" in st.session_state and st.session_state["access_token"]:
+        # Create a figure and axis
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot bars for each cycle
+        for _, row in df_cycles.iterrows():
+            ax.barh(
+                y=0,  # All bars are on the same y-axis for a horizontal span
+                left=row["startDate"],
+                width=(row["endDate"] - row["startDate"]).days,
+                height=row["theoreticalWeeklyTSS"] / 800,  # Normalize height (max TSS = 800)
+                color=cycle_colors.get(row["cycleType"], "#cccccc"),
+                edgecolor="black",
+                label=row["cycleType"] if row["cycleType"] not in ax.get_legend_handles_labels()[1] else ""
+            )
+
+        # Beautify the X-axis (dates)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))  # Weekly ticks
+        plt.xticks(rotation=45)
+
+        # Add labels and title
+        ax.set_title("Training Load and Week Organization")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Normalized Weekly TSS (0 to 800)")
+        ax.set_ylim(0, 1)  # Normalize height between 0 and 1
+
+        # Add custom legend
+        patches = [mpatches.Patch(color=color, label=label) for label, color in cycle_colors.items()]
+        ax.legend(handles=patches, title="Cycle Type")
+
+        # Remove y-ticks (cosmetic)
+        ax.set_yticks([])
+
+        # Save the graph as an image
+        plt.tight_layout()
+        plt.savefig("training_load_graph.png", dpi=300)
+        log_debug("Access token found. Proceeding to update Strava activity...")
+        access_token = st.session_state["access_token"]
+
+        # Path to the image generated earlier
+        image_path = "training_load_graph.png"
+
+        if os.path.exists(image_path):
+            image_url = upload_image_to_imgur(image_path)
+            if not image_url:
+                log_debug("Failed to upload image. Exiting.")
+            last_activity = get_last_activity(access_token)
+            if not last_activity:
+                log_debug("Failed to fetch last activity. Exiting.")
+            
+            if "description" in last_activity:
+                old_description = last_activity["description"] 
+            else:
+                old_description = ""
+                
+            # Prepare training plan details
+            race_distance = f"{st.session_state['inputs']['races'][0]['distance']} km".replace(".", ". ")
+            race_sport = f"{st.session_state['inputs']['races'][0]['sport'].capitalize()}"
+            race_date = f"{st.session_state['inputs']['races'][0]['date'].strftime('%Y-%m-%d')}"
+            week_start_date = f"{df_cycles['startDate'].iloc[0].strftime('%Y-%m-%d')}"
+            week_end_date = f"{df_cycles['endDate'].iloc[0].strftime('%Y-%m-%d')}"
+            cycle_type = f"{df_cycles['cycleType'].iloc[0]}"
+            planned_hours = f"{df_cycles['theoreticalWeeklyTSS'].iloc[0] / 60:.1f}".replace(".", ". ")
+            resting = f"{df_cycles['theoreticalResting'].iloc[0]}"
+
+            next_week_cycle_type = f"{df_cycles['cycleType'].iloc[1]}"
+            next_week_planned_hours = f"{df_cycles['theoreticalWeeklyTSS'].iloc[1] / 60:.1f}".replace(".", ". ")
+            next_week_resting = f"{df_cycles['theoreticalResting'].iloc[1]}"
+            
+            disguised_url = image_url.replace(".", ". ").replace("://", ":// ")
+            
+
+            # Updated description with Unicode bold
+            description = (
+                f"🏋️ {to_unicode_bold_sans('Training Plan by RaceRoadmap')} 🏋️\n"
+                f"🏁 {to_unicode_bold_sans(f'Goal : {race_distance} {race_sport}')} on {to_unicode_bold_sans(race_date)}.\n\n"
+                f"({to_unicode_bold_sans('Try it now 👉 type ')}https :// raceroadmap. streamlit. app {to_unicode_bold_sans('without spaces')})\n\n"
+                f"📆 Week {week_start_date} to {week_end_date} - {to_unicode_bold_sans(f'{cycle_type} week')} "
+                f"(📈 {to_unicode_bold_sans(f'{planned_hours} hours planned for end of the week')} "
+                f"({'🛌 Resting week' if resting =='True' else '💪 Working week'}))\n\n"
+                f"🔜 {to_unicode_bold_sans('Next week')} will be a {to_unicode_bold_sans(f'{next_week_cycle_type} week')} "
+                f"({'🛌 Resting week' if next_week_resting =='True' else '💪 Working week'}) with "
+                f"📈 {to_unicode_bold_sans(f'{next_week_planned_hours} hours planned')}.\n\n"
+                f"🖼️ Link to yearly training plan: {disguised_url} (remove spaces, thanks Strava)\n\n"
+            ) + old_description
+
+            update_activity_description(last_activity["id"], description, access_token)
+    else:
+        log_debug("Strava Access Token not available. Please log in.")
 
     # Extract the selected week from event
     if event and "selection" in event and "selector" in event["selection"]:
+        log_debug(f"Event: {event}")
         selected_points = event["selection"]["selector"]
         if selected_points:
             # Extract endDate and convert from timestamp to datetime
@@ -3661,12 +4354,16 @@ with graph_row:
             if selected_week_timestamp is not None:
                 selected_week_datetime = pd.to_datetime(selected_week_timestamp, unit="ms")
                 st.session_state["selected_week"] = selected_week_datetime
+                log_debug(f"Selected week: {selected_week_datetime}")
             else:
                 st.session_state.pop("selected_week", None)
+                log_debug("No week selected pop1.")
         else:
             st.session_state.pop("selected_week", None)
+            log_debug("No week selected pop2.")
     else:
         st.session_state.pop("selected_week", None)
+        log_debug("No week selected pop3.")
 
 # Week Organization and Activity Visualization
 row_organization = st.columns([1, 2])
