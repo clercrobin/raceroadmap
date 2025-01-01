@@ -1,0 +1,21 @@
+[server]
+headless = true
+enableCORS = false
+
+[strava]
+client_id = "15596"
+client_secret = "34b128a6cc70b37bb3e61393faff927961f1ab07"
+redirect_uri = "https://raceroadmap.streamlit.app"
+
+[snowflake]
+account = "yqb05911.us-east-1"
+user = "STREAMLIT"
+password = "6vTMU!78ZBaWaGw"
+role = "STREAMLIT"
+warehouse = "COMPUTE_WH"
+database = "STREAMLIT_APPS"
+schema = "PUBLIC"
+
+[imgur]
+client_id = "63830779e12034e"
+client_secret = "ec88df1c6a5ff5d3b5515e5d1ae060b321728ee9"
