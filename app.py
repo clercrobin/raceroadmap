@@ -4340,7 +4340,7 @@ with graph_row:
             description = (
                 f"🏋️ {to_unicode_bold_sans('Training Plan by RaceRoadmap')} 🏋️\n"
                 f"🏁 {to_unicode_bold_sans(f'Goal : {race_distance} {race_sport}')} on {to_unicode_bold_sans(race_date)}.\n\n"
-                f"({to_unicode_bold_sans('Try it now 👉 type ')}https :// raceroadmap. streamlit. app {to_unicode_bold_sans('without spaces')})\n\n"
+                f"({to_unicode_bold_sans('Try it now 👉 type ')}https :// raceroadmap. com {to_unicode_bold_sans('without spaces')})\n\n"
                 f"📆 Week {week_start_date} to {week_end_date} - {to_unicode_bold_sans(f'{cycle_type} week')} "
                 f"(📈 {to_unicode_bold_sans(f'{planned_hours} hours planned for end of the week')} "
                 f"({'🛌 Resting week' if resting =='True' else '💪 Working week'}))\n\n"
